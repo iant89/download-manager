@@ -1,0 +1,12 @@
+{
+  "name": "Flux — Browser Download Manager",
+  "short_name": "Flux",
+  "description": "A fast, multi-connection download manager that runs entirely in your browser.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070a14",
+  "theme_color": "#070a14",
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
