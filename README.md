@@ -31,6 +31,25 @@ npm run build      # production bundle in dist/
 
 The dev/preview server exposes `/testfile/<size>?delay=<ms>&auth=user:pass&noranges=1` — a deterministic, range-capable endpoint for exercising the engine. The **New download** dialog offers one-click samples.
 
+## Deploy to GitHub Pages
+
+1. In the repository's **Settings → Pages → Build and deployment**, set **Source** to **GitHub Actions**.
+2. Merge the workflow into `main`. Every push to `main` builds and deploys the site; you can also run **Deploy to GitHub Pages** manually from the **Actions** tab (select `main`).
+3. Open the deployment URL shown by the workflow's `github-pages` environment (normally https://iant89.github.io/download-manager/).
+
+The workflow uses Node.js 22, installs the lockfile with `npm ci`, builds the app (including TypeScript checks), and deploys `dist/` with the official Pages actions. Authentication uses GitHub's built-in token; no personal token or deployment secret is needed. Vite's base path comes from the Pages configuration, so assets and the download service worker work on project URLs and custom domains.
+
+GitHub Pages is static hosting: the local `/testfile/` sample endpoint is **not available** there. Use real download URLs whose servers allow CORS, or configure a CORS proxy in Settings.
+
+To check a project-path build locally:
+
+```bash
+npm ci
+npm run build -- --base /download-manager/
+npm run preview -- --base /download-manager/
+# Open http://localhost:4173/download-manager/
+```
+
 ## Architecture
 
 ```

@@ -1,9 +1,10 @@
 /**
- * Bridge to the `/sw.js` service worker that streams downloads to the browser's
+ * Bridge to the app-scoped `sw.js` service worker that streams downloads to the browser's
  * native download shelf (see public/sw.js for the receiving half).
  */
 
-const SW_URL = '/sw.js'
+const BASE_URL = import.meta.env.BASE_URL
+const SW_URL = `${BASE_URL}sw.js`
 let registration: Promise<ServiceWorkerRegistration | null> | null = null
 
 export function isSwSupported(): boolean {
@@ -19,7 +20,7 @@ export async function prepareStreamSink(timeoutMs = 6000): Promise<boolean> {
   if (!isSwSupported()) return false
   if (!registration) {
     registration = navigator.serviceWorker
-      .register(SW_URL, { scope: '/' })
+      .register(SW_URL, { scope: BASE_URL })
       .then(async (reg) => {
         await navigator.serviceWorker.ready
         return reg
@@ -60,7 +61,7 @@ export interface StreamRegistration {
 export async function registerStream(info: StreamRegistration): Promise<string> {
   const controller = navigator.serviceWorker.controller
   if (!controller) throw new Error('Service worker is not controlling this page yet')
-  const url = `/flux-stream/${encodeURIComponent(info.id)}`
+  const url = `${BASE_URL}flux-stream/${encodeURIComponent(info.id)}`
 
   const ack = new Promise<void>((resolve, reject) => {
     const channel = new MessageChannel()
@@ -109,7 +110,7 @@ export function abortStream(id: string, reason = 'canceled'): void {
   if (!isSwSupported()) return
   const controller = navigator.serviceWorker.controller
   if (!controller) return
-  const url = `/flux-stream/${encodeURIComponent(id)}`
+  const url = `${BASE_URL}flux-stream/${encodeURIComponent(id)}`
   const channel = new MessageChannel()
   channel.port1.onmessage = () => channel.port1.close()
   try {
