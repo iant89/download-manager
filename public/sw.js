@@ -7,13 +7,14 @@
  * an option. This worker implements the classic "StreamSaver" trick:
  *
  *   1. the page registers a `ReadableStream` against a synthetic URL
- *      (`/flux-stream/<id>`) by transferring it over a MessageChannel,
+ *      (`flux-stream/<id>` under the app scope) by transferring it over a MessageChannel,
  *   2. the page navigates a hidden iframe to that URL,
  *   3. this worker intercepts the navigation and answers with the stream plus a
  *      `Content-Disposition: attachment` header, so the browser writes the bytes
  *      straight to the user's download folder as they arrive.
  */
 const STREAMS = new Map()
+const STREAM_PATH = new URL('flux-stream/', self.registration.scope).pathname
 
 function sanitize(name) {
   return String(name || 'download')
@@ -63,7 +64,7 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url)
   if (url.origin !== self.location.origin) return
-  if (!url.pathname.startsWith('/flux-stream/')) return
+  if (!url.pathname.startsWith(STREAM_PATH)) return
 
   const entry = STREAMS.get(url.pathname)
   if (!entry) {
