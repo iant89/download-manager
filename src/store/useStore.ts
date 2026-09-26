@@ -23,7 +23,7 @@ import { applyProxy, guessFilename, safeFilename } from '../lib/http'
 import { DownloadManager, type ManagerEvent } from '../lib/engine/manager'
 import { handleStore } from '../lib/engine/handleStore'
 import { bootstrapSinks, getSinkCapabilities, refreshSinkCapabilities, resolveSaveMode } from '../lib/engine/sinkFactory'
-import { isFsaSupported, pickSaveFile, PickerCancelledError, type FsaFileHandle } from '../lib/engine/sinks/fsa'
+import { ensureWritePermission, isFsaSupported, pickDirectory, pickSaveFile, PickerCancelledError, type FsaFileHandle } from '../lib/engine/sinks/fsa'
 import { MEMORY_WARN_LIMIT } from '../lib/engine/sinks/memorySink'
 
 export interface Toast {
@@ -476,7 +476,6 @@ export const useStore = create<StoreState>()(
           get().pushToast({ kind: 'warning', title: 'Not supported', message: 'This browser cannot remember a folder.' })
           return
         }
-        const { pickDirectory, ensureWritePermission } = await import('../lib/engine/sinks/fsa')
         try {
           const dir = await pickDirectory('flux-downloads')
           const ok = await ensureWritePermission(dir)
