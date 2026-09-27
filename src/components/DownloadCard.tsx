@@ -109,7 +109,14 @@ function DownloadCardBase({ task, selected }: Props) {
               </div>
             </div>
 
-            <div className="flex shrink-0 items-center gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+            <div
+              className={cn(
+                'flex shrink-0 items-center gap-1 transition-opacity',
+                selected
+                  ? 'opacity-100'
+                  : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100',
+              )}
+            >
               {live ? (
                 <button
                   type="button"
@@ -207,10 +214,11 @@ function DownloadCardBase({ task, selected }: Props) {
                     {task.saveMode === 'fsa' ? 'disk' : task.saveMode === 'stream' ? 'stream' : 'memory'}
                   </span>
                 )}
-                <span className="num text-[var(--faint)]">
-                  {task.segments.length > 1 ? `${task.segments.length}×` : ''}
-                  {task.totalBytes ? '' : ''}
-                </span>
+                {task.segments.length > 1 && (
+                  <span className="chip" title={`${task.segments.length} parallel connections`}>
+                    {task.segments.length}×
+                  </span>
+                )}
               </span>
             </div>
           </div>

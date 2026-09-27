@@ -58,7 +58,7 @@ export function DownloadList() {
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <div className="flex overflow-x-auto rounded-xl border bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] p-[3px]">
           {FILTERS.map((f) => (
-            <button key={f.key} onClick={() => setFilter(f.key)} className={cn('relative shrink-0 rounded-[9px] px-3 py-1.5 text-xs font-medium transition-colors', filter === f.key ? 'text-[var(--fg)]' : 'text-[var(--muted)] hover:text-[var(--fg)]')}>
+            <button key={f.key} type="button" aria-pressed={filter === f.key} onClick={() => setFilter(f.key)} className={cn('relative shrink-0 rounded-[9px] px-3 py-1.5 text-xs font-medium transition-colors', filter === f.key ? 'text-[var(--fg)]' : 'text-[var(--muted)] hover:text-[var(--fg)]')}>
               {filter === f.key && <motion.span layoutId="filter-pill" className="absolute inset-0 rounded-[9px] bg-[var(--solid)] shadow-sm" transition={{ type: 'spring', stiffness: 500, damping: 36 }} />}
               <span className="relative">{f.label}{counts[f.key] > 0 && <span className="num ml-1.5 text-[10px] text-[var(--faint)]">{counts[f.key]}</span>}</span>
             </button>

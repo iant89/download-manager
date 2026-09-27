@@ -3,18 +3,23 @@
  * dev server's `/testfile/*` endpoint (start `npm run dev` first) and verify
  * that the assembled bytes are exactly what the server generated.
  */
-import { describe, expect, it, beforeAll } from 'vitest'
+import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import { TaskRunner, buildSegments } from './taskRunner'
 import { RateLimiter } from './rateLimiter'
+import { StreamSink } from './sinks/streamSink'
+import { WriteQueue } from './writeQueue'
 import type { Sink, SinkContext, SinkResult } from './sinks/types'
 import { DEFAULT_AUTH, type DownloadStatus, type SegmentState } from '../../types'
 
-const BASE = process.env.FLUX_TEST_BASE ?? 'http://localhost:5173'
+const BASE =
+  process.env.FLUX_TEST_BASE ??
+  (globalThis as { __FLUX_TEST_SERVER__?: { base: string } }).__FLUX_TEST_SERVER__?.base ??
+  'http://localhost:5173'
 
 /** Random-access sink that keeps bytes in memory for verification. */
 class TestSink implements Sink {
   readonly mode = 'memory' as const
-  readonly resumable = true
+  resumable = true as boolean
   buffer = new Uint8Array(0)
   writes = 0
   async write(offset: number, chunk: Uint8Array): Promise<void> {
@@ -77,7 +82,16 @@ function run(url: string, opts: Partial<{ connections: number; speedLimit: numbe
 
 beforeAll(async () => {
   const res = await fetch(`${BASE}/testfile/1kb`, { method: 'HEAD' })
-  if (!res.ok) throw new Error(`dev server not reachable at ${BASE}`)
+  if (!res.ok) throw new Error(`test server not reachable at ${BASE}`)
+})
+
+afterAll(async () => {
+  // The setup file boots a private /testfile server; close it so vitest exits.
+  const server = (globalThis as { __FLUX_TEST_SERVER__?: { server: { closeAllConnections?(): void; close(cb: () => void): void } } }).__FLUX_TEST_SERVER__?.server
+  if (server) {
+    server.closeAllConnections?.()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
 })
 
 describe('buildSegments', () => {
@@ -171,4 +185,100 @@ describe('TaskRunner', () => {
     await new Promise((res) => setTimeout(res, 400))
     expect(r.runner.getSnapshot().receivedBytes).toBe(bytes)
   }, 30_000)
+
+  it('pausing a non-resumable sink resets progress and still completes', async () => {
+    const size = 20 * 1024 * 1024
+    const sink = new TestSink()
+    sink.resumable = false // stream-sink semantics: nothing can be rewound
+    const statuses: DownloadStatus[] = []
+    let resolve!: (r: SinkResult) => void
+    let reject!: (e: Error) => void
+    const done = new Promise<SinkResult>((res, rej) => { resolve = res; reject = rej })
+    const runner = new TaskRunner(
+      { id: 'nr', url: `${BASE}/testfile/20mb?delay=2`, filename: 'nr.bin', connections: 4, speedLimit: 0, maxRetries: 3, auth: DEFAULT_AUTH, headers: [] },
+      {
+        globalLimiter: new RateLimiter(0),
+        sinkFactory: async () => sink,
+        callbacks: {
+          onMeta: () => {},
+          onSegments: () => {},
+          onStatus: (s, err) => { statuses.push(s); if (s === 'failed') reject(new Error(err ?? 'failed')) },
+          onProgress: () => {},
+          onSaveMode: () => {},
+          onComplete: (r) => resolve(r),
+        },
+      },
+    )
+    void runner.start()
+    await new Promise((res) => setTimeout(res, 250))
+    await runner.pause()
+    // A stream sink cannot seek: the runner must start over from zero.
+    expect(runner.getSnapshot().receivedBytes).toBe(0)
+    void runner.start()
+    const result = await done
+    expect(result.size).toBe(size)
+    verify(sink.buffer, size)
+  }, 40_000)
+})
+
+// ---------------------------------------------------------------------------
+// Stream sink reordering (regression: out-of-order writes used to deadlock)
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates a StreamSink whose readable side is drained in the background (the
+ * service worker plays this role in the app) and records the byte order in
+ * which chunks reach the wire.
+ */
+function makeRecordingSink() {
+  const transform = new TransformStream<Uint8Array, Uint8Array>()
+  const sink = new StreamSink(
+    { id: 't', filename: 'x.bin', mime: 'application/octet-stream', totalBytes: 64, resumeFrom: 0 },
+    transform,
+  )
+  const wire: number[] = []
+  const drained = (async () => {
+    const reader = transform.readable.getReader()
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value) wire.push(value[0]!)
+    }
+  })()
+  return { sink, wire, drained }
+}
+
+describe('stream sink / write queue reordering', () => {
+  it('resolves an out-of-order write once the gap before it fills', async () => {
+    const { sink, wire, drained } = makeRecordingSink()
+    const late = sink.write(4, new Uint8Array([2, 2, 2, 2]))
+    await new Promise((r) => setTimeout(r, 10))
+    const early = sink.write(0, new Uint8Array([1, 1, 1, 1]))
+    await Promise.all([early, late])
+    await sink.finish(8, 'x.bin')
+    await drained
+    // Bytes must reach the wire in file order even though chunk 2 arrived first.
+    expect(wire).toEqual([1, 2])
+  }, 5000)
+
+  it('write queue makes progress when the head write is parked', async () => {
+    const { sink, wire, drained } = makeRecordingSink()
+    const queue = new WriteQueue(sink, 64)
+    queue.submit(4, new Uint8Array([2, 2, 2, 2]))
+    queue.submit(0, new Uint8Array([1, 1, 1, 1]))
+    await queue.stop()
+    expect(queue.pending).toBe(0)
+    await sink.finish(8, 'x.bin')
+    await drained
+    expect(wire).toEqual([1, 2])
+  }, 5000)
+
+  it('overlapping retransmissions are dropped, not duplicated', async () => {
+    const { sink, wire, drained } = makeRecordingSink()
+    await sink.write(0, new Uint8Array([1, 1, 1, 1]))
+    await sink.write(0, new Uint8Array([9, 9, 9, 9, 2, 2, 2, 2])) // fully + partially overlapped
+    await sink.finish(8, 'x.bin')
+    await drained
+    expect(wire).toEqual([1, 2])
+  }, 5000)
 })

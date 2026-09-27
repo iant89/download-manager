@@ -50,14 +50,39 @@ export default function App() {
     return () => window.removeEventListener('paste', onPaste)
   }, [])
 
+  // Drop a link anywhere to add it.
+  useEffect(() => {
+    const extractUrl = (e: DragEvent): string | null => {
+      const raw = e.dataTransfer?.getData('text/uri-list') || e.dataTransfer?.getData('text/plain') || ''
+      const trimmed = raw.split('\n').find((line) => line.trim() && !line.startsWith('#'))?.trim() ?? ''
+      return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null
+    }
+    const onDragOver = (e: DragEvent) => {
+      if (extractUrl(e)) e.preventDefault()
+    }
+    const onDrop = (e: DragEvent) => {
+      const url = extractUrl(e)
+      if (!url) return
+      e.preventDefault()
+      void useStore.getState().addDownload({ url })
+    }
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [])
+
+  const dialogOpen = ui.addOpen || ui.settingsOpen || ui.shortcutsOpen
   useHotkeys([
-    { key: 'n', run: () => setUi({ addOpen: true }) },
-    { key: ',', run: () => setUi({ settingsOpen: true }) },
-    { key: '/', run: () => document.getElementById('flux-search')?.focus() },
-    { key: '?', shift: true, run: () => setUi({ shortcutsOpen: true }) },
-    { key: 'escape', allowInInput: true, run: () => { if (!ui.addOpen && !ui.settingsOpen && !ui.shortcutsOpen) select(null) } },
-    { key: 'p', shift: true, run: () => useStore.getState().pauseAll() },
-    { key: 'r', shift: true, run: () => useStore.getState().resumeAll() },
+    { key: 'n', when: () => !dialogOpen, run: () => setUi({ addOpen: true }) },
+    { key: ',', when: () => !dialogOpen, run: () => setUi({ settingsOpen: true }) },
+    { key: '/', when: () => !dialogOpen, run: () => document.getElementById('flux-search')?.focus() },
+    { key: '?', shift: true, when: () => !dialogOpen, run: () => setUi({ shortcutsOpen: true }) },
+    { key: 'p', shift: true, when: () => !dialogOpen, run: () => useStore.getState().pauseAll() },
+    { key: 'r', shift: true, when: () => !dialogOpen, run: () => useStore.getState().resumeAll() },
+    { key: 'escape', allowInInput: true, run: () => { if (!dialogOpen) select(null) } },
   ])
 
   return (
@@ -71,7 +96,6 @@ export default function App() {
 
       <button
         className="btn btn-primary fixed bottom-5 right-5 z-30 h-13 w-13 rounded-full p-0 shadow-2xl lg:hidden"
-        style={{ height: 52, width: 52 }}
         onClick={() => setUi({ addOpen: true })}
         aria-label="New download"
       >

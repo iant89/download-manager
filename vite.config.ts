@@ -30,6 +30,9 @@ function testFilePlugin(): Plugin {
     }
   }
 
+  const sanitizeName = (raw: string): string =>
+    raw.replace(/[^\w.\-() ]+/g, '_').replace(/^\.+/, '').slice(0, 120) || 'download.bin'
+
   const handler = async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const size = parseSize(url.pathname.slice('/testfile/'.length))
@@ -41,7 +44,8 @@ function testFilePlugin(): Plugin {
     const delay = Math.max(0, Number(url.searchParams.get('delay') ?? 0))
     const auth = url.searchParams.get('auth')
     const noRanges = url.searchParams.get('noranges') === '1'
-    const name = url.searchParams.get('name') ?? `flux-test-${url.pathname.split('/').pop()}.bin`
+    // Header values must never contain CR/LF (Node would reject the response).
+    const name = sanitizeName(url.searchParams.get('name') ?? `flux-test-${url.pathname.split('/').pop()}.bin`)
 
     if (auth) {
       const header = req.headers.authorization ?? ''
@@ -100,7 +104,20 @@ function testFilePlugin(): Plugin {
     req.on('close', () => {
       closed = true
     })
-    const write = (buf: Buffer) => new Promise<void>((resolve) => (res.write(buf) ? resolve() : res.once('drain', resolve)))
+    const write = (buf: Buffer) =>
+      new Promise<void>((resolve) => {
+        if (closed || res.writableEnded || res.destroyed) {
+          resolve()
+          return
+        }
+        if (res.write(buf)) {
+          resolve()
+        } else {
+          res.once('drain', resolve)
+          // A disconnected client never drains — don't wait forever.
+          res.once('close', resolve)
+        }
+      })
     while (offset <= end && !closed) {
       const n = Math.min(CHUNK, end - offset + 1)
       const buf = Buffer.allocUnsafe(n)

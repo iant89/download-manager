@@ -19,7 +19,7 @@ export interface ProbeResult {
   supportsRanges: boolean
 }
 
-const SAFE_FILENAME = /[^\w.\-()[\] ]+/g
+const SAFE_FILENAME = /[^\p{L}\p{N}._\-()[\] ]+/gu
 
 export function buildRequestHeaders(
   auth: AuthConfig,
@@ -108,7 +108,13 @@ export function parseContentDispositionFilename(header: string | null): string |
 }
 
 export function safeFilename(name: string): string {
-  const cleaned = name.replace(/[\\/]+/g, '_').replace(SAFE_FILENAME, '_').replace(/\s+/g, ' ').trim()
+  const cleaned = name
+    .replace(/[\\/]+/g, '_')
+    .replace(SAFE_FILENAME, '_')
+    .replace(/\s+/g, ' ')
+    .trim()
+    // Windows-hostile tails: no trailing dots or spaces.
+    .replace(/[. ]+$/, '')
   return cleaned.replace(/^\.+/, '') || 'download'
 }
 
@@ -116,7 +122,6 @@ export function guessFilename(url: string, contentType?: string | null): string 
   try {
     const u = new URL(url)
     const base = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() ?? '')
-    if (base && base.includes('.')) return safeFilename(base)
     if (base) return safeFilename(base)
   } catch {
     /* ignore */
