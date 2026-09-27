@@ -4,10 +4,11 @@
  * segments, retries and state; this module deals in HTTP.
  */
 
-import { HttpError, probeResource, type ProbeResult } from '../http'
+import { HttpError, type ProbeResult } from '../http'
 import type { ResourceIdentity } from './checkpoint'
 import { parseContentRange, parseUnsatisfiedTotal, validateRangeResponse, type ContentRange } from './contentRange'
 import { parseRetryAfter } from './retryPolicy'
+import { ResourceProbe } from './resourceProbe'
 
 export interface RangeRequest {
   url: string
@@ -52,8 +53,21 @@ export interface HttpTransport {
 }
 
 export class FetchTransport implements HttpTransport {
+  private probeDelegate = new ResourceProbe()
+
   probe(url: string, headers: Record<string, string>, signal: AbortSignal): Promise<ProbeResult> {
-    return probeResource(url, headers, signal)
+    // Delegates to the dedicated ResourceProbe (plan P2-08); HttpTransport keeps
+    // the transport-level concerns (headers / range validation).
+    return this.probeDelegate.probe(url, headers, signal).then((info) => ({
+      finalUrl: info.finalUrl,
+      totalBytes: info.size,
+      contentType: info.contentType,
+      filename: info.filename,
+      supportsRanges: info.acceptsRanges,
+      acceptsRangesHeader: info.acceptsRangesHeader,
+      etag: info.etag,
+      lastModified: info.lastModified,
+    }))
   }
 
   async fetchRange(request: RangeRequest): Promise<RangeResponse> {

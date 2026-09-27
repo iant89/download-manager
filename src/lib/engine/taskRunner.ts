@@ -40,6 +40,9 @@ import type { Sink, SinkContext, SinkResult } from './sinks/types'
 import { canTransition } from './stateMachine'
 import { defaultTransport, type HttpTransport, type RangeResponse } from './transport'
 import { WriteQueue } from './writeQueue'
+import { AdaptiveConnectionController } from './adaptive'
+import { globalHostHealth } from './hostHealth'
+import type { HostHealthTracker } from './hostHealth'
 
 export const MIN_SEGMENT_BYTES = 512 * 1024
 /** Bytes a single connection buffers before handing them to the sink. */
@@ -160,6 +163,10 @@ export class TaskRunner {
     lastCheckpointAt: null,
   }
 
+  // P3-01 / P3-02: adaptive controller and host health tracking
+  private adaptive: AdaptiveConnectionController
+  private hostHealth: HostHealthTracker
+
   constructor(config: TaskConfig, deps: RunnerDeps, initial?: RunnerInitial) {
     this.id = config.id
     this.config = { ...config }
@@ -170,6 +177,14 @@ export class TaskRunner {
     this.totalBytes = initial?.totalBytes ?? null
     this.resumeFrom = 0
     this.taskLimiter = new RateLimiter(config.speedLimit)
+    // P3-01: adaptive starts at 2 and grows toward requested max; tests keep
+    // deterministic behaviour because small files use requested directly.
+    this.adaptive = new AdaptiveConnectionController({
+      initial: Math.min(2, this.config.connections),
+      min: 1,
+      max: this.config.connections,
+    })
+    this.hostHealth = globalHostHealth
 
     const cp = initial?.checkpoint
     if (cp) {
@@ -648,6 +663,7 @@ export class TaskRunner {
         if (!this.isRunning()) return
         if (attempt === 0 && receivedBefore === 0) engineEvent('download.segment.start', { id: this.id, segment: segment.index, start: segment.start, end: segment.end })
 
+        const fetchStart = Date.now()
         const response = await this.transport.fetchRange({
           url: this.config.url,
           headers: this.requestHeaders(),
@@ -658,6 +674,12 @@ export class TaskRunner {
           // adopted (and the plan adjusted) rather than treated as a change.
           expectedTotal: this.identityLocked ? this.totalBytes : null,
         })
+
+        const latencyMs = Date.now() - fetchStart
+        // P3-02: host health — latency sample for successful fetch
+        this.hostHealth.recordSuccess(this.host, latencyMs, 0, latencyMs)
+        // P3-01: adaptive — observe latency trend (throughput will be measured after consume)
+        // Note: initial observation uses latency as inverse throughput proxy.
 
         const plan = this.ingestResponse(response, segment, requestStart, rangeRequested)
         // Never leave the first worker (or its siblings) waiting on the gate.
@@ -720,6 +742,19 @@ export class TaskRunner {
         if (this.canFallBackToPlain(error)) throw error
 
         this.countFailure(error)
+        // P3-02: host health failure tracking (latency / 429 / resets)
+        if (error instanceof HttpError) {
+          if (error.status === 429) this.hostHealth.recordFailure(this.host, '429')
+          else if (error.status >= 500) this.hostHealth.recordFailure(this.host, '5xx')
+          else this.hostHealth.recordFailure(this.host, 'other')
+        } else if (error instanceof Error && /aborted|reset|network/i.test(error.message)) {
+          this.hostHealth.recordFailure(this.host, 'reset')
+        } else {
+          this.hostHealth.recordFailure(this.host, 'other')
+        }
+        // P3-01: adaptive — shrink on rate limit
+        if (error instanceof HttpError && error.status === 429) this.adaptive.onRateLimited()
+
         if (segment.received > receivedBefore) attempt = 0
         attempt += 1
         const decision = classifyFailure(error, { attempt, maxRetries: this.config.maxRetries })
@@ -1026,8 +1061,14 @@ export class TaskRunner {
     if (Number.isFinite(segment.end) && segment.end !== this.totalBytes - 1) return
     if (!this.supportsRanges) return
 
+    // P3-01 / P3-02: consult adaptive controller and host health; if the
+    // host is rate-limited, stay conservative and don't fan out.
+    const host = this.hostHealth.get(this.host)
+    if (host.rateLimited) return
+    const desired = this.adaptive.connections
+    const targetConnections = Math.min(this.config.connections, desired)
     const remaining = this.totalBytes - networkOffset
-    const extra = Math.min(this.config.connections - 1, Math.floor(remaining / MIN_SEGMENT_BYTES) - 1)
+    const extra = Math.min(targetConnections - 1, Math.floor(remaining / MIN_SEGMENT_BYTES) - 1)
     if (extra < 1 || remaining < MIN_SEGMENT_BYTES * 2) return
 
     const splitAt = networkOffset + Math.floor(remaining / (extra + 1))

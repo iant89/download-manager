@@ -83,6 +83,67 @@ export const EMPTY_DIAGNOSTICS: DownloadDiagnostics = {
   lastCheckpointAt: null,
 }
 
+/**
+ * Split model (plan P1-05): the six focused pieces that once lived together
+ * inside DownloadTask. The flat task is kept for React rendering and
+ * persistence, but new code should prefer the structured aggregate.
+ */
+export interface DownloadSource {
+  url: string
+  effectiveUrl: string
+  headers: HeaderEntry[]
+  auth: AuthConfig
+  proxyUsed: boolean
+}
+
+export interface DownloadTarget {
+  filename: string
+  mime: string
+  saveMode: SaveMode | null
+  handleKey: string | null
+  resultUrl: string | null
+  awaitingTarget: boolean
+}
+
+export interface DownloadPolicy {
+  connections: number
+  maxRetries: number
+  speedLimit: number
+  priority: number
+  queuedAt: number
+}
+
+export interface DownloadCheckpointState {
+  totalBytes: number | null
+  supportsRanges: boolean
+  segments: SegmentState[]
+  identity: ResourceIdentity | null
+  expectedChecksum: string | null
+  checksumVerified: boolean | null
+}
+
+export interface DownloadTelemetry {
+  receivedBytes: number
+  speed: number
+  speedHistory: number[]
+  diagnostics: DownloadDiagnostics
+  error: string | null
+  terminalFailureCount: number
+}
+
+export interface Download {
+  id: string
+  source: DownloadSource
+  target: DownloadTarget
+  policy: DownloadPolicy
+  status: DownloadStatus
+  checkpoint: DownloadCheckpointState
+  telemetry: DownloadTelemetry
+  createdAt: number
+  startedAt: number | null
+  completedAt: number | null
+}
+
 export interface DownloadTask {
   id: string
   url: string
@@ -131,6 +192,11 @@ export interface DownloadTask {
   awaitingTarget: boolean
   /** Blob URL for in-memory downloads, valid until the task is removed. */
   resultUrl: string | null
+
+  /** Structured views (plan P1-05) — derived from the flat fields, for new code. */
+  source?: DownloadSource
+  target?: DownloadTarget
+  policy?: DownloadPolicy
 }
 
 export interface NewDownloadInput {

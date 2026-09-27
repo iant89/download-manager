@@ -28,6 +28,7 @@ import { bootstrapSinks, getSinkCapabilities, refreshSinkCapabilities, resolveSa
 import { ensureWritePermission, isFsaSupported, pickDirectory, pickSaveFile, PickerCancelledError, type FsaFileHandle } from '../lib/engine/sinks/fsa'
 import { MEMORY_WARN_LIMIT } from '../lib/engine/sinks/memorySink'
 import { debug } from '../lib/debugLog'
+import { smoothSpeed } from '../lib/engine/eta'
 
 export interface Toast {
   id: string
@@ -132,19 +133,31 @@ export const useStore = create<StoreState>()(
 
         const persisted = await loadTasks()
         if (persisted) {
+          // P3-05: restore in deterministic order — priority first, then FIFO
+          // (queuedAt). Do not depend on IndexedDB iteration order.
+          const sortedPersisted = [...persisted].sort((a, b) => b.priority - a.priority || (a.queuedAt ?? 0) - (b.queuedAt ?? 0))
           const tasks: Record<string, DownloadTask> = {}
           const order: string[] = []
           const checkpoints = new Map<string, DownloadCheckpoint>()
           let corrupt = 0
-          for (const task of persisted) {
+          for (const task of sortedPersisted) {
             const restored = await restoreTask(task, (cp) => checkpoints.set(task.id, cp), () => (corrupt += 1))
             tasks[task.id] = restored
             order.push(task.id)
           }
+          // Preserve the persisted order array (which is already priority-sorted)
+          // but ensure the manager's scheduler sees the same priority/sequence.
           set({ tasks, order })
           for (const id of order) {
             const task = tasks[id]!
             manager?.createRunner(task, checkpoints.get(id) ?? null)
+          }
+          // P3-05: queued items stay queued so the scheduler can restore the
+          // queue order after a reload. Only active downloads become paused as
+          // they need a user gesture to resume (file handle permission).
+          for (const id of order) {
+            const task = tasks[id]!
+            if (task.status === 'queued') manager?.enqueue(id)
           }
           if (corrupt > 0) {
             get().pushToast({
@@ -178,7 +191,9 @@ export const useStore = create<StoreState>()(
           if (active && previous != null && dt > 0) {
             speed = Math.max(0, ((received - previous) / dt) * 1)
           }
-          const smoothed = active ? task.speed * 0.6 + speed * 0.4 : 0
+          // P3-04: ETA / speed uses exponential moving average to avoid
+          // noisy instantaneous values: smoothed = alpha*current + (1-alpha)*prev
+          const smoothed = active ? smoothSpeed(task.speed, speed, 0.15) : 0
 
           // Settled tasks (finished and already decayed to zero) are left
           // untouched so their cards don't re-render on every tick.
@@ -465,14 +480,14 @@ export const useStore = create<StoreState>()(
       },
 
       resumeAll() {
-        // Queue everything in its original order; the scheduler enforces
-        // concurrency and priority.
+        // Queue everything in priority order, FIFO within a priority
+        // (plan P1-09 / P3-05). The scheduler enforces concurrency.
         const { tasks, order } = get()
         const ids = [...order].reverse().filter((id) => {
           const status = tasks[id]?.status
           return status === 'paused' || status === 'failed' || status === 'queued'
         })
-        ids.sort((a, b) => (tasks[a]!.queuedAt ?? 0) - (tasks[b]!.queuedAt ?? 0))
+        ids.sort((a, b) => (tasks[b]!.priority ?? 0) - (tasks[a]!.priority ?? 0) || (tasks[a]!.queuedAt ?? 0) - (tasks[b]!.queuedAt ?? 0))
         for (const id of ids) {
           if (tasks[id]!.status === 'failed') get().retry(id)
           else get().resume(id)
@@ -889,7 +904,11 @@ export async function restoreTask(
     restored.status = 'failed'
     restored.error = 'The browser download stream was interrupted by the reload. Retry to start over.'
   } else if (wasActive) {
-    restored.status = 'paused'
+    // P3-05: keep `queued` as queued so queue order survives a reload.
+    // Only truly active downloads (downloading/probing/pausing/...) become
+    // paused and need a user gesture to resume.
+    if (task.status === 'queued') restored.status = 'queued'
+    else restored.status = 'paused'
   }
 
   let checkpoint: DownloadCheckpoint | null = null

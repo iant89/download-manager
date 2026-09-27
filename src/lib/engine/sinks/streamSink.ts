@@ -1,5 +1,5 @@
 import type { SaveMode } from '../../../types'
-import { registerStream, triggerStreamDownload } from './swBridge'
+import { isSwAlive, registerStream, triggerStreamDownload } from './swBridge'
 import { ChecksumMismatchError, DownloadIntegrityError } from '../errors'
 import { Sha256 } from '../sha256'
 import type { Sink, SinkContext, SinkResult } from './types'
@@ -36,6 +36,8 @@ export class StreamSink implements Sink {
   private expectedChecksum: string | null
   /** Bytes are pushed strictly in order, so they can be hashed on the fly. */
   private hasher: Sha256 | null
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null
+  private heartbeatFailures = 0
 
   constructor(
     ctx: SinkContext,
@@ -45,6 +47,7 @@ export class StreamSink implements Sink {
     this.expectedSize = ctx.totalBytes
     this.expectedChecksum = ctx.checksum ?? null
     this.hasher = this.expectedChecksum ? new Sha256() : null
+    this.startHeartbeat()
   }
 
   /** Bytes already pushed down the pipe, in order. */
@@ -68,6 +71,37 @@ export class StreamSink implements Sink {
     })
     triggerStreamDownload(url)
     return sink
+  }
+
+  private startHeartbeat(): void {
+    // P2-05: StreamSink is non-resumable (browser may terminate the worker).
+    // Heartbeat pings the worker; after 3 consecutive failures we fail the
+    // stream rather than leaving the UI in "downloading" forever.
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return
+    this.heartbeatTimer = setInterval(async () => {
+      if (this.closed || this.aborted) {
+        this.stopHeartbeat()
+        return
+      }
+      const alive = await isSwAlive().catch(() => false)
+      if (!alive) {
+        this.heartbeatFailures += 1
+        if (this.heartbeatFailures >= 3) {
+          const err = new DownloadIntegrityError('Service worker was terminated — stream download failed')
+          this.failAll(err)
+          this.stopHeartbeat()
+        }
+      } else {
+        this.heartbeatFailures = 0
+      }
+    }, 8000)
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
   }
 
   private async writerFor(): Promise<WritableStreamDefaultWriter<Uint8Array>> {
@@ -209,6 +243,7 @@ export class StreamSink implements Sink {
   async abort(reason = 'canceled'): Promise<void> {
     this.aborted = true
     this.closed = true
+    this.stopHeartbeat()
     this.failAll(new Error(reason))
     try {
       const writer = await this.writerFor()
@@ -216,6 +251,11 @@ export class StreamSink implements Sink {
     } catch {
       /* already closed */
     }
+  }
+
+  /** Exposed for diagnostics: heartbeat state (plan P3-10). */
+  get heartbeat(): { failures: number; active: boolean } {
+    return { failures: this.heartbeatFailures, active: Boolean(this.heartbeatTimer) }
   }
 }
 

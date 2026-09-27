@@ -2065,7 +2065,7 @@ Status of this plan in the codebase (branch `arena/01a0e0f4-download-manager`).
 - ✅ **P1-02 Engine is the status authority.** The store only sets `queued` (scheduling) and optimistic `paused` when no runner is live. Everything else comes from runner events.
 - ✅ **P1-03 Fully async pause.** Pause aborts, awaits workers, drains the write queue, checkpoints, then reports `paused`. Workers never block on a drain while pausing.
 - ✅ **P1-04 State machine.** `engine/stateMachine.ts`; invalid transitions are logged, and tests assert valid sequences.
-- 🟡 **P1-05 Split DownloadTask.** Identity and diagnostics are separate sub-objects; the task itself is still one record.
+- ✅ **P1-05 Split DownloadTask.** `types.ts` now exposes `DownloadSource`, `DownloadTarget`, `DownloadPolicy`, `DownloadCheckpointState`, `DownloadTelemetry` and the aggregate `Download`; `engine/downloadModel.ts` converts between the flat `DownloadTask` (kept for React/persistence) and the structured model. New code uses the split form.
 - ✅ **P1-06 Telemetry vs durable state.** Speed, history and diagnostics are never used for resume; the checkpoint is the only resume source.
 - ✅ **P1-07 Checkpoint store.**
 - ✅ **P1-08 Scheduler.** `engine/scheduler.ts`, owned by `DownloadManager`; resume and retry go through the queue.
@@ -2081,10 +2081,10 @@ Status of this plan in the codebase (branch `arena/01a0e0f4-download-manager`).
 - ✅ **P2-03 MemorySink hard limit.** `MemoryLimitError`; the limit is configurable (default 512 MB).
 - ✅ **P2-04 StreamSink finalization.** Checks that all bytes were pushed, nothing is parked, and the checksum matches; otherwise it aborts instead of closing.
   - Duplicate or misaligned retransmissions are merged instead of stalling or failing, which was found by the property test.
-- 🟡 **P2-05 StreamSink lifecycle.** A stream interrupted by a reload is shown as *failed* (it can't be resumed). There is no service-worker heartbeat.
+- ✅ **P2-05 StreamSink lifecycle.** A stream interrupted by a reload is shown as *failed* (it can't be resumed). A heartbeat (`swBridge.pingSw` / `isSwAlive`, `sw.js` `HEARTBEAT`, `streamSink.ts` interval) detects a terminated service worker and fails the stream instead of hanging.
 - ✅ **P2-06 Integrity errors.** `engine/errors.ts`.
 - ✅ **P2-07 HTTP transport.** `engine/transport.ts` (`HttpTransport`, injectable).
-- 🟡 **P2-08 Resource prober.** Lives in `transport.probe()`, not a separate class.
+- ✅ **P2-08 Resource prober.** `engine/resourceProbe.ts` (`ResourceProbe`, `ResourceInfo`); `FetchTransport.probe()` delegates to it.
 - ✅ **P2-09 Property-based tests.** Seeded random segment tiling, and random chunking, order and duplicates through StreamSink and WriteQueue.
 - ✅ **P2-10 Network failure tests.** The shared test server injects short bodies, bad ranges, overflow, 503 with Retry-After, 416, ETag changes and size changes.
 - ✅ **P2-11 Concurrent scheduling tests.**
@@ -2095,11 +2095,11 @@ Status of this plan in the codebase (branch `arena/01a0e0f4-download-manager`).
 
 ### P3 — improvements
 
-- ⬜ **P3-01 Adaptive connection count.**
-- ⬜ **P3-02 Host health tracking.**
+- ✅ **P3-01 Adaptive connection count.** `engine/adaptive.ts` (`AdaptiveConnectionController`: starts at 2, grows when throughput improves, shrinks on 429/reset; `taskRunner.ts` `maybeSplit` consults it and host health).
+- ✅ **P3-02 Host health tracking.** `engine/hostHealth.ts` (`HostHealthTracker`, `HostStats`); `taskRunner` records latency/throughput/success and 429/resets, `manager.hostHealth` exposes it for diagnostics and adaptive decisions.
 - ✅ **P3-03 Download priority.**
-- ⬜ **P3-04 ETA improvements.** The existing smoothed ETA is unchanged.
-- 🟡 **P3-05 Persist queue order.** `queuedAt` and priority are persisted and Resume all restores the order. Queued items come back paused after a reload, because file permissions need a user gesture.
+- ✅ **P3-04 ETA improvements.** `engine/eta.ts` (`smoothSpeed` with `alpha=0.15`, `calculateEta`); `store/useStore.ts` ticker now uses `smoothSpeed(prev, cur, 0.15)` and remaining/smoothed ETA.
+- ✅ **P3-05 Persist queue order.** `queuedAt` and priority are persisted and the scheduler restores priority-then-FIFO order. `restoreTask` keeps `queued` as `queued` and `hydrate` re-enqueues them; `resumeAll` sorts by priority then `queuedAt`. Order no longer depends on IndexedDB iteration.
 - ✅ **P3-06 Versioned checkpoint migrations.**
 - ✅ **P3-07 Checkpoint corruption recovery.** An invalid checkpoint is discarded, the download restarts from 0, and a toast explains it.
 - ✅ **P3-08 Observability.** `engine/events.ts` structured events feed the debug console.
