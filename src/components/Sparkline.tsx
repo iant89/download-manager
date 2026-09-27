@@ -10,21 +10,44 @@ interface SparklineProps {
   area?: boolean
 }
 
-/**
- * Tiny dependency-free SVG sparkline. Scales to its container, so pass only the
- * aspect you care about.
- */
-export function Sparkline({ data, height = 34, width = 120, color = 'var(--brand)', className, area = true }: SparklineProps) {
-  const gradientId = useId()
-  const points = data.length > 1 ? data : [0, ...data, 0]
-  const max = Math.max(...points, 1)
-  const min = Math.min(...points, 0)
-  const span = Math.max(1, max - min)
+export interface SparklineGeometry {
+  /** One [x, y] per sample, newest last. */
+  coords: [number, number][]
+  line: string
+  fill: string
+}
 
+const PAD_RATIO = 0.15
+
+/**
+ * Maps samples onto the box. Exported so the scaling can be tested without a
+ * DOM: the graph has to show a transfer that is merely *steady*, not only one
+ * that is accelerating.
+ */
+export function sparklineGeometry(data: number[], width: number, height: number): SparklineGeometry {
+  // Guard the inputs: a single non-finite sample would otherwise poison the
+  // whole path (`d="M NaN NaN…"`) and the browser would draw nothing at all.
+  const values = data.map((value) => (Number.isFinite(value) && value > 0 ? value : 0))
+  const points = values.length > 1 ? values : values.length === 1 ? [values[0]!, 0] : [0, 0]
+
+  const max = Math.max(...points)
+  const min = Math.min(...points)
+  const span = max - min
+  // Pad the range so variation is visible even on a steady transfer (scaling
+  // from a hard 0 baseline flattens a constant rate onto the top edge). An
+  // idle series still gets a flat line on the floor, never a divide-by-zero.
+  const pad = span > 0 ? span * PAD_RATIO : Math.max(max, 1) * PAD_RATIO
+  const hi = max + pad
+  const lo = Math.max(0, min - pad)
+  const range = Math.max(hi - lo, Number.EPSILON)
+
+  const top = 1.5
+  const bottom = height - 1.5
+  const last = points.length - 1
   const coords = points.map((value, index) => {
-    const x = (index / (points.length - 1)) * width
-    const y = height - ((value - min) / span) * (height - 3) - 1.5
-    return [x, y] as const
+    const x = (index / last) * width
+    const y = bottom - ((value - lo) / range) * (bottom - top)
+    return [x, y] as [number, number]
   })
 
   const line = coords
@@ -36,7 +59,16 @@ export function Sparkline({ data, height = 34, width = 120, color = 'var(--brand
     })
     .join(' ')
 
-  const fill = `${line} L ${width} ${height} L 0 ${height} Z`
+  return { coords, line, fill: `${line} L ${width} ${height} L 0 ${height} Z` }
+}
+
+/**
+ * Tiny dependency-free SVG sparkline. Scales to its container, so pass only the
+ * aspect you care about.
+ */
+export function Sparkline({ data, height = 34, width = 120, color = 'var(--brand)', className, area = true }: SparklineProps) {
+  const gradientId = useId()
+  const { line, fill } = sparklineGeometry(data, width, height)
 
   return (
     <svg
