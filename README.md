@@ -13,7 +13,7 @@ A production-grade, single-page download manager built with **React 19 + TypeScr
 - **Speed limits** — per-download and global token-bucket throttling, changeable live.
 - **Pause / resume / cancel / retry**, concurrency cap, per-connection retry with exponential backoff, automatic CORS-proxy retry (optional).
 - **Live telemetry** — per-connection segment bars, throughput sparklines, ETA, peak/average speed.
-- **Fluid UI** — spring animations (framer-motion), light/dark/system themes, reduced-motion support, mobile bottom-sheet layout, keyboard shortcuts (`N`, `/`, `,`, `?`, `Shift+P/R`), paste-a-URL-anywhere.
+- **Fluid UI** — quick transitions (framer-motion), immediate detail switching, per-card progress updates, touch-friendly controls, light/dark/system themes, reduced-motion support, mobile bottom-sheet layout, keyboard shortcuts (`N`, `/`, `,`, `?`, `Shift+P/R`), paste-a-URL-anywhere.
 - **Persistence** — queue and settings survive reloads (IndexedDB + localStorage).
 
 ## Browser limitations (by design)
@@ -29,7 +29,20 @@ npm test           # engine + UI tests (self-contained — no dev server needed)
 npm run build      # production bundle in dist/
 ```
 
-The dev/preview server exposes `/testfile/<size>?delay=<ms>&auth=user:pass&noranges=1` — a deterministic, range-capable endpoint for exercising the engine. The **New download** dialog offers one-click samples. The test suite spins up its own embedded copy of that endpoint (`tests/testServer.ts`), so `npm test` works without a dev server running.
+### Manual test downloads
+
+The dev/preview server retains a deterministic, range-capable `/testfile/<size>` endpoint for exercising the engine. Paste one of these paths into the **New download → URL** field (or use an absolute URL with your dev/preview server's origin):
+
+| Test | URL path | Setup |
+| --- | --- | --- |
+| 20 MB, parallel download | `/testfile/20mb?name=sample-20mb.bin` | Set Connections to 8 |
+| 100 MB, throttled server | `/testfile/100mb?delay=2&name=slow-100mb.bin` | Adds a 2 ms delay per 64 KiB chunk |
+| 5 MB, no range support | `/testfile/5mb?noranges=1&name=single-stream.bin` | Verifies single-stream fallback |
+| 8 MB, Basic authentication | `/testfile/8mb?auth=flux:demo&name=protected.bin` | Expand Authentication, select Basic, enter username `flux` and password `demo` |
+
+Sizes accept `b`, `kb`, `mb`, or `gb`. Optional query parameters are `delay` (milliseconds per 64 KiB), `auth` (`user:pass`), `noranges=1`, and `name` (response filename). These samples are documented here rather than shown in the dialog; the endpoint is available only in development/preview, not on static hosting.
+
+The test suite spins up its own embedded copy of that endpoint (`tests/testServer.ts`), so `npm test` works without a dev server running.
 
 ## Deploy to GitHub Pages
 

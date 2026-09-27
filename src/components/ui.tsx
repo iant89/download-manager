@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useId, type ReactNode } from 'react'
 import { cn } from '../lib/cn'
 
 export function Modal({
@@ -37,17 +37,15 @@ export function Modal({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.18 }}
         >
           <div className="absolute inset-0 bg-black/45 backdrop-blur-sm" onClick={onClose} />
           <motion.div
             role="dialog"
             aria-modal
             aria-label={title}
-            initial={{ opacity: 0, y: 28, scale: 0.98 }}
+            initial={{ opacity: 0, y: 12, scale: 0.99 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.98 }}
-            transition={{ type: 'spring', stiffness: 380, damping: 34 }}
+            exit={{ opacity: 0, y: 8, scale: 0.99 }}
             className={cn(
               'panel-solid relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-3xl sm:rounded-3xl',
               width,
@@ -88,7 +86,7 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between gap-4 rounded-xl px-1 py-2 text-left"
+      className="toggle-control flex w-full items-center justify-between gap-4 rounded-xl px-1 py-2 text-left"
     >
       <span>
         <span className="block text-[13px] font-medium">{label}</span>
@@ -96,15 +94,13 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
       </span>
       <span
         className={cn(
-          'relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-200',
+          'relative h-[22px] w-[38px] shrink-0 rounded-full transition-colors duration-100',
           checked ? 'bg-[var(--brand)]' : 'bg-[color-mix(in_oklab,var(--fg)_16%,transparent)]',
         )}
       >
-        <motion.span
-          layout
-          transition={{ type: 'spring', stiffness: 500, damping: 32 }}
-          className="absolute top-[3px] h-4 w-4 rounded-full bg-white shadow"
-          style={{ left: checked ? 18 : 3 }}
+        <span
+          className="toggle-thumb absolute left-[3px] top-[3px] h-4 w-4 rounded-full bg-white shadow"
+          style={{ transform: `translateX(${checked ? 15 : 0}px)` }}
         />
       </span>
     </button>
@@ -112,6 +108,7 @@ export function Toggle({ checked, onChange, label, hint }: { checked: boolean; o
 }
 
 export function Segmented<T extends string>({ value, onChange, options }: { value: T; onChange: (v: T) => void; options: { value: T; label: string }[] }) {
+  const groupId = useId()
   return (
     <div className="inline-flex rounded-xl border bg-[color-mix(in_oklab,var(--fg)_4%,transparent)] p-[3px]">
       {options.map((o) => (
@@ -119,16 +116,16 @@ export function Segmented<T extends string>({ value, onChange, options }: { valu
           key={o.value}
           type="button"
           onClick={() => onChange(o.value)}
+          aria-pressed={value === o.value}
           className={cn(
-            'relative rounded-[9px] px-3 py-1.5 text-xs font-medium transition-colors',
+            'control-tab relative rounded-[9px] px-3 py-1.5 text-xs font-medium transition-colors',
             value === o.value ? 'text-[var(--fg)]' : 'text-[var(--muted)] hover:text-[var(--fg)]',
           )}
         >
           {value === o.value && (
             <motion.span
-              layoutId={`seg-${options.map((x) => x.value).join('')}`}
+              layoutId={`seg-${groupId}`}
               className="absolute inset-0 rounded-[9px] bg-[var(--solid)] shadow-sm"
-              transition={{ type: 'spring', stiffness: 500, damping: 36 }}
             />
           )}
           <span className="relative">{o.label}</span>

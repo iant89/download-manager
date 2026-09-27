@@ -12,10 +12,15 @@ import { DetailsPanel } from './components/DetailsPanel'
 import { AddDownloadDialog } from './components/AddDownloadDialog'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Toasts } from './components/Toasts'
+import { MotionPreferences } from './components/MotionPreferences'
 import { Modal } from './components/ui'
 import { isActive } from './types'
 
 export default function App() {
+  return <MotionPreferences><AppContent /></MotionPreferences>
+}
+
+function AppContent() {
   useTheme()
   const hydrate = useStore((s) => s.hydrate)
   const setUi = useStore((s) => s.setUi)

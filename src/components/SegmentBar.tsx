@@ -1,4 +1,3 @@
-import { motion } from 'framer-motion'
 import type { DownloadStatus, SegmentState } from '../types'
 import { isActive } from '../types'
 import { cn } from '../lib/cn'
@@ -53,7 +52,7 @@ export function SegmentBar({ segments, total, status, height = 8 }: SegmentBarPr
           : segment.end - segment.start + 1
         const ratio = size > 0 ? Math.min(1, segment.received / size) : 0
         const weight = Math.max(0.04, size / total)
-        const working = segment.status === 'active' || segment.status === 'retrying'
+        const working = active && (segment.status === 'active' || segment.status === 'retrying')
         const done = segment.status === 'done' || settled
 
         return (
@@ -66,12 +65,10 @@ export function SegmentBar({ segments, total, status, height = 8 }: SegmentBarPr
             style={{ flexGrow: weight, flexBasis: 0, minWidth: 3 }}
             title={`Connection ${index + 1}: ${(ratio * 100).toFixed(1)}%`}
           >
-            <motion.div
-              className="absolute inset-y-0 left-0 rounded-full"
-              initial={false}
-              animate={{ width: `${Math.max(done ? 100 : 2, ratio * 100)}%` }}
-              transition={{ type: 'spring', stiffness: 220, damping: 30, mass: 0.5 }}
+            <div
+              className="progress-fill absolute inset-0 rounded-full"
               style={{
+                transform: `scaleX(${Math.max(done ? 1 : 0.02, ratio)})`,
                 background: settled
                   ? 'color-mix(in oklab, var(--ok) 80%, transparent)'
                   : segment.status === 'error'
