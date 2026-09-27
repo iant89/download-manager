@@ -12,7 +12,8 @@ export function StatusPill({
   pulse?: boolean
 }) {
   const meta = STATUS_META[status]
-  const live = status === 'downloading' || status === 'probing' || status === 'finalizing' || status === 'queued'
+  const live =
+    status === 'downloading' || status === 'probing' || status === 'verifying' || status === 'finalizing' || status === 'queued' || status === 'pausing'
 
   return (
     <span

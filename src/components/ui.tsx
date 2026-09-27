@@ -34,6 +34,7 @@ export function Modal({
       {open && (
         <motion.div
           className="fixed inset-0 z-50 grid place-items-end sm:place-items-center p-0 sm:p-6"
+          style={{ bottom: 'var(--debug-offset, 0px)' }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}

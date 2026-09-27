@@ -10,7 +10,8 @@ export function Toasts() {
   const dismiss = useStore((s) => s.dismissToast)
   return (
     <div
-      className="pointer-events-none fixed inset-x-0 bottom-4 z-[60] flex flex-col items-center gap-2 px-4 sm:items-end sm:pr-6"
+      style={{ bottom: 'calc(1rem + var(--debug-offset, 0px))' }}
+      className="pointer-events-none fixed inset-x-0 z-[60] flex flex-col items-center gap-2 px-4 sm:items-end sm:pr-6"
       role="status"
       aria-live="polite"
     >

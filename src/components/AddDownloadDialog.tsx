@@ -3,10 +3,13 @@ import { ChevronDown, Link2, LoaderCircle, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 
 import { useStore } from '../store/useStore'
+import { PRIORITY_LEVELS } from '../lib/engine/scheduler'
+import { isValidSha256 } from '../lib/engine/sha256'
 import type { AuthConfig, HeaderEntry } from '../types'
 import { DEFAULT_AUTH } from '../types'
 import { guessFilename, isForbiddenRequestHeader } from '../lib/http'
 import { Field, Modal, Segmented, SPEED_PRESETS } from './ui'
+import { HeaderNameInput } from './HeaderNameInput'
 
 export function AddDownloadDialog() {
   const open = useStore((s) => s.ui.addOpen)
@@ -20,9 +23,12 @@ export function AddDownloadDialog() {
   const [speedLimit, setSpeedLimit] = useState(0)
   const [auth, setAuth] = useState<AuthConfig>({ ...DEFAULT_AUTH })
   const [headers, setHeaders] = useState<HeaderEntry[]>([])
+  const [checksum, setChecksum] = useState('')
+  const [priority, setPriority] = useState(0)
   const [advanced, setAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
 
+  const checksumInvalid = checksum.trim() !== '' && !isValidSha256(checksum)
   const urlInput = useRef<HTMLInputElement>(null)
   const urlEdited = useRef(false)
   const selectClipboardUrl = useRef(false)
@@ -37,6 +43,8 @@ export function AddDownloadDialog() {
     setSpeedLimit(0)
     setAuth({ ...DEFAULT_AUTH })
     setHeaders([])
+    setChecksum('')
+    setPriority(0)
     setAdvanced(false)
     setBusy(false)
     urlEdited.current = false
@@ -82,7 +90,7 @@ export function AddDownloadDialog() {
     const currentSession = session.current
     setBusy(true)
     try {
-      const id = await addDownload({ url: resolvedUrl, filename: filename || undefined, connections, speedLimit, auth, headers })
+      const id = await addDownload({ url: resolvedUrl, filename: filename || undefined, connections, speedLimit, auth, headers, priority, checksum: checksum.trim() || undefined })
       if (id && session.current === currentSession) {
         close()
       }
@@ -91,7 +99,19 @@ export function AddDownloadDialog() {
     }
   }
 
-  const addHeader = () => setHeaders((h) => [...h, { id: crypto.randomUUID(), name: '', value: '', enabled: true }])
+  const focusHeader = useRef<string | null>(null)
+  const addHeader = () => {
+    const id = crypto.randomUUID()
+    focusHeader.current = id
+    setHeaders((h) => [...h, { id, name: '', value: '', enabled: true }])
+  }
+  // Focus a freshly added header name so its suggestions appear straight away.
+  useEffect(() => {
+    const id = focusHeader.current
+    if (!id) return
+    focusHeader.current = null
+    document.getElementById(`header-${id}-name`)?.focus()
+  }, [headers])
 
   return (
     <Modal
@@ -148,7 +168,7 @@ export function AddDownloadDialog() {
 
         <button type="button" aria-expanded={advanced} aria-controls="download-advanced" onClick={() => setAdvanced((a) => !a)} className="flex items-center gap-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--fg)]">
           <motion.span animate={{ rotate: advanced ? 180 : 0 }}><ChevronDown size={14} /></motion.span>
-          Authentication, headers & limits
+          Authentication, headers, limits & integrity
         </button>
 
         <AnimatePresence initial={false}>
@@ -197,6 +217,38 @@ export function AddDownloadDialog() {
                   </div>
                 </Field>
 
+                <Field label="Priority" hint="Higher priority downloads start first when the queue is full.">
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Priority">
+                    {PRIORITY_LEVELS.map((p) => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        aria-pressed={priority === p.value}
+                        onClick={() => setPriority(p.value)}
+                        className={`chip ${priority === p.value ? 'border-[var(--brand)] text-[var(--fg)]' : ''}`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                <Field
+                  label="Expected SHA-256"
+                  hint={checksumInvalid ? 'Needs 64 hexadecimal characters.' : 'Optional. The finished file is hashed and must match.'}
+                >
+                  <input
+                    className="field font-mono text-[12px]"
+                    placeholder="e3b0c44298fc1c149afbf4c8996fb924…"
+                    aria-label="Expected SHA-256"
+                    aria-invalid={checksumInvalid}
+                    spellCheck={false}
+                    autoComplete="off"
+                    value={checksum}
+                    onChange={(e) => setChecksum(e.target.value)}
+                  />
+                </Field>
+
                 <Field label="Custom headers" hint="Cookies, Origin and other forbidden headers cannot be set by a web page.">
                   <div className="space-y-2">
                     {headers.map((h) => {
@@ -205,16 +257,18 @@ export function AddDownloadDialog() {
                       return (
                         <div key={h.id}>
                           <div className="flex gap-2">
-                            <input
+                            <HeaderNameInput
+                              id={`header-${h.id}-name`}
                               className="field font-mono text-[12px]"
                               aria-label="Header name"
                               aria-invalid={forbidden}
                               aria-describedby={forbidden ? errorId : undefined}
                               placeholder="X-Api-Key"
                               value={h.name}
-                              onChange={(e) => setHeaders(headers.map((x) => (x.id === h.id ? { ...x, name: e.target.value } : x)))}
+                              onChange={(name) => setHeaders((all) => all.map((x) => (x.id === h.id ? { ...x, name } : x)))}
+                              onPick={() => document.getElementById(`header-${h.id}-value`)?.focus()}
                             />
-                            <input aria-label="Header value" className="field font-mono text-[12px]" placeholder="value" value={h.value} onChange={(e) => setHeaders(headers.map((x) => (x.id === h.id ? { ...x, value: e.target.value } : x)))} />
+                            <input id={`header-${h.id}-value`} aria-label="Header value" className="field font-mono text-[12px]" placeholder="value" value={h.value} onChange={(e) => setHeaders(headers.map((x) => (x.id === h.id ? { ...x, value: e.target.value } : x)))} />
                             <button type="button" aria-label="Remove header" className="icon-btn shrink-0" onClick={() => setHeaders(headers.filter((x) => x.id !== h.id))}><Trash2 size={14} /></button>
                           </div>
                           {forbidden && <p id={errorId} role="alert" className="mt-1 text-xs text-[var(--danger)]">This header is forbidden by the browser. Remove it or use a different header.</p>}

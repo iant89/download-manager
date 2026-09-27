@@ -13,6 +13,7 @@ import { AddDownloadDialog } from './components/AddDownloadDialog'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Toasts } from './components/Toasts'
 import { MotionPreferences } from './components/MotionPreferences'
+import { DebugConsole } from './components/DebugConsole'
 import { Modal } from './components/ui'
 import { isActive } from './types'
 
@@ -91,7 +92,7 @@ function AppContent() {
   ])
 
   return (
-    <div className="flex h-dvh flex-col px-3 pt-3 sm:px-5 sm:pt-5 lg:px-8 lg:pt-6">
+    <div className="flex h-dvh flex-col px-3 pt-3 sm:px-5 sm:pt-5 lg:px-8 lg:pt-6" style={{ paddingBottom: 'var(--debug-offset, 0px)' }}>
       <Aurora />
       <Header />
       <main className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(0,1fr)_380px] xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -100,7 +101,8 @@ function AppContent() {
       </main>
 
       <button
-        className="btn btn-primary fixed bottom-5 right-5 z-30 h-13 w-13 rounded-full p-0 shadow-2xl lg:hidden"
+        className="btn btn-primary fixed right-5 z-30 h-13 w-13 rounded-full p-0 shadow-2xl lg:hidden"
+        style={{ bottom: 'calc(1.25rem + var(--debug-offset, 0px))' }}
         onClick={() => setUi({ addOpen: true })}
         aria-label="New download"
       >
@@ -117,6 +119,7 @@ function AppContent() {
         </ul>
       </Modal>
       <Toasts />
+      <DebugConsole />
     </div>
   )
 }
