@@ -20,10 +20,12 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
   const resume = useStore((s) => s.resume)
   const retry = useStore((s) => s.retry)
   const remove = useStore((s) => s.remove)
+  const cancel = useStore((s) => s.cancel)
   const updateTask = useStore((s) => s.updateTask)
   const setPriority = useStore((s) => s.setPriority)
   const pushToast = useStore((s) => s.pushToast)
   const showSegments = useStore((s) => s.settings.showSegmentView)
+  const showConfirm = useStore((s) => s.showConfirm)
 
   const stats = useMemo(() => {
     if (!task) return null
@@ -33,6 +35,47 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
     const peak = Math.max(0, ...task.speedHistory)
     return { elapsed, avg, eta, peak }
   }, [task])
+
+  const requestRemove = () => {
+    if (!task) return
+    const isCompleted = task.status === 'completed'
+    const isFailed = task.status === 'failed' || task.status === 'canceled'
+    showConfirm({
+      title: `Remove "${task.filename}"?`,
+      message: isCompleted
+        ? 'This will remove the download from your list. The file on disk will not be deleted, but the entry and its history will be gone.'
+        : isFailed
+          ? 'This will remove the failed download from your list. You can add it again later if you want to retry.'
+          : 'This download is still in progress. Removing it will cancel the transfer and discard its progress.',
+      details: `File: ${task.filename}`,
+      confirmLabel: 'Remove',
+      variant: 'danger',
+      icon: 'trash',
+      onConfirm: () => {
+        remove(task.id)
+        select(null)
+      },
+    })
+  }
+
+  const requestCancel = () => {
+    if (!task) return
+    const progress =
+      task.totalBytes && task.totalBytes > 0
+        ? `${Math.min(100, (task.receivedBytes / task.totalBytes) * 100).toFixed(1)}% downloaded`
+        : task.receivedBytes
+          ? `${(task.receivedBytes / (1024 * 1024)).toFixed(1)} MB downloaded`
+          : 'Progress will be lost if the save method is not resumable'
+    showConfirm({
+      title: `Cancel "${task.filename}"?`,
+      message: `The download will be stopped and marked as canceled. ${progress}. You can retry it later.`,
+      details: `File: ${task.filename}`,
+      confirmLabel: 'Cancel download',
+      variant: 'warning',
+      icon: 'cancel',
+      onConfirm: () => cancel(task.id),
+    })
+  }
 
   const content = task && stats && (
     <div className="flex h-full flex-col">
@@ -140,13 +183,16 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
 
       <footer className="flex items-center gap-2 border-t p-3">
         {isActive(task.status) ? (
-          <button className="btn flex-1" disabled={task.status === 'pausing' || task.status === 'verifying' || task.status === 'finalizing'} onClick={() => pause(task.id)}><Pause size={14} /> {task.status === 'pausing' ? 'Pausing…' : 'Pause'}</button>
+          <>
+            <button className="btn flex-1" disabled={task.status === 'pausing' || task.status === 'verifying' || task.status === 'finalizing'} onClick={() => pause(task.id)}><Pause size={14} /> {task.status === 'pausing' ? 'Pausing…' : 'Pause'}</button>
+            <button className="btn" onClick={requestCancel}><X size={14} /> Cancel</button>
+          </>
         ) : task.status === 'failed' ? (
           <button className="btn btn-primary flex-1" onClick={() => retry(task.id)}><RotateCw size={14} /> Retry</button>
         ) : task.status !== 'completed' ? (
           <button className="btn btn-primary flex-1" onClick={() => resume(task.id)}><Play size={14} /> Resume</button>
         ) : null}
-        <button className="btn btn-danger" onClick={() => remove(task.id)}><Trash2 size={14} /> Remove</button>
+        <button className="btn btn-danger" onClick={requestRemove}><Trash2 size={14} /> Remove</button>
       </footer>
     </div>
   )

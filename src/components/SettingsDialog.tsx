@@ -11,8 +11,37 @@ export function SettingsDialog() {
   const caps = useStore((s) => s.capabilities)
   const chooseFolder = useStore((s) => s.chooseFolder)
   const clearFolder = useStore((s) => s.clearFolder)
+  const showConfirm = useStore((s) => s.showConfirm)
 
   const close = () => setUi({ settingsOpen: false })
+
+  const requestReset = () => {
+    showConfirm({
+      title: 'Reset settings to defaults?',
+      message:
+        'All your custom settings — theme, connections, speed limits, save preferences, proxy and notifications — will be restored to their default values. This cannot be undone.',
+      confirmLabel: 'Reset settings',
+      cancelLabel: 'Keep settings',
+      variant: 'warning',
+      icon: 'reset',
+      onConfirm: () => reset(),
+    })
+  }
+
+  const requestForgetFolder = () => {
+    const name = settings.defaultFolderName ?? 'default folder'
+    showConfirm({
+      title: `Forget folder "${name}"?`,
+      message:
+        'Flux will no longer save new downloads to this folder automatically. You will be asked where to save each new download, or you can pick a new default folder later.',
+      confirmLabel: 'Forget folder',
+      variant: 'warning',
+      icon: 'folder',
+      onConfirm: () => {
+        void clearFolder()
+      },
+    })
+  }
 
   return (
     <Modal
@@ -23,7 +52,7 @@ export function SettingsDialog() {
       width="max-w-2xl"
       footer={
         <>
-          <button className="btn btn-ghost" onClick={reset}><RotateCcw size={13} /> Reset defaults</button>
+          <button className="btn btn-ghost" onClick={requestReset}><RotateCcw size={13} /> Reset defaults</button>
           <button className="btn btn-primary" onClick={close}>Done</button>
         </>
       }
@@ -88,7 +117,7 @@ export function SettingsDialog() {
           {caps.fsa && (
             <div className="flex flex-wrap items-center gap-2">
               <button className="btn" onClick={() => void chooseFolder()}><FolderOpen size={14} /> {settings.defaultFolderName ? `Folder: ${settings.defaultFolderName}` : 'Choose default folder'}</button>
-              {settings.defaultFolderName && <button className="btn btn-ghost" onClick={() => void clearFolder()}>Forget</button>}
+              {settings.defaultFolderName && <button className="btn btn-ghost" onClick={requestForgetFolder}>Forget</button>}
             </div>
           )}
           <Toggle checked={settings.alwaysAskLocation} onChange={(alwaysAskLocation) => update({ alwaysAskLocation })} label="Always ask where to save" hint="Applies when using the file picker" />

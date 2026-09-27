@@ -33,6 +33,68 @@ function DownloadCardBase({ task, selected }: Props) {
   const cancel = useStore((s) => s.cancel)
   const retry = useStore((s) => s.retry)
   const remove = useStore((s) => s.remove)
+  const showConfirm = useStore((s) => s.showConfirm)
+
+  const requestRemove = () => {
+    const model = (() => {
+      const { title, message, details, confirmLabel, variant, icon } = (() => {
+        // inline to avoid circular import — use same shape as ConfirmModels.removeDownload
+        if (task.status === 'completed') {
+          return {
+            title: `Remove "${task.filename}"?`,
+            message:
+              'This will remove the download from your list. The file on disk will not be deleted, but the entry and its history will be gone.',
+            details: `File: ${task.filename}`,
+            confirmLabel: 'Remove',
+            variant: 'danger' as const,
+            icon: 'trash' as const,
+          }
+        }
+        if (task.status === 'failed' || task.status === 'canceled') {
+          return {
+            title: `Remove "${task.filename}"?`,
+            message: 'This will remove the failed download from your list. You can add it again later if you want to retry.',
+            details: `File: ${task.filename}`,
+            confirmLabel: 'Remove',
+            variant: 'danger' as const,
+            icon: 'trash' as const,
+          }
+        }
+        return {
+          title: `Remove "${task.filename}"?`,
+          message:
+            'This download is still in progress. Removing it will cancel the transfer and discard its progress.',
+          details: `File: ${task.filename}`,
+          confirmLabel: 'Remove',
+          variant: 'danger' as const,
+          icon: 'trash' as const,
+        }
+      })()
+      return { title, message, details, confirmLabel, variant, icon }
+    })()
+    showConfirm({
+      ...model,
+      onConfirm: () => remove(task.id),
+    })
+  }
+
+  const requestCancel = () => {
+    const progress =
+      task.totalBytes && task.totalBytes > 0
+        ? `${Math.min(100, (task.receivedBytes / task.totalBytes) * 100).toFixed(1)}% downloaded`
+        : task.receivedBytes
+          ? `${(task.receivedBytes / (1024 * 1024)).toFixed(1)} MB downloaded`
+          : 'Progress will be lost if the save method is not resumable'
+    showConfirm({
+      title: `Cancel "${task.filename}"?`,
+      message: `The download will be stopped and marked as canceled. ${progress}. You can retry it later from the beginning or from the last checkpoint if available.`,
+      details: `File: ${task.filename}`,
+      confirmLabel: 'Cancel download',
+      variant: 'warning',
+      icon: 'cancel',
+      onConfirm: () => cancel(task.id),
+    })
+  }
 
   const percent = useMemo(() => {
     if (!task.totalBytes || task.totalBytes <= 0) return null
@@ -166,7 +228,7 @@ function DownloadCardBase({ task, selected }: Props) {
                   title="Cancel"
                   onClick={(e) => {
                     e.stopPropagation()
-                    cancel(task.id)
+                    requestCancel()
                   }}
                 >
                   <X size={15} />
@@ -180,7 +242,7 @@ function DownloadCardBase({ task, selected }: Props) {
                   title="Remove from list"
                   onClick={(e) => {
                     e.stopPropagation()
-                    remove(task.id)
+                    requestRemove()
                   }}
                 >
                   <X size={15} />
