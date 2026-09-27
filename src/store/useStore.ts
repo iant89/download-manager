@@ -39,6 +39,21 @@ export interface Toast {
   createdAt: number
 }
 
+export type ConfirmVariant = 'danger' | 'warning' | 'default'
+export type ConfirmIcon = 'trash' | 'alert' | 'cancel' | 'reset' | 'folder' | 'clear'
+
+export interface ConfirmDialogState {
+  title: string
+  message?: string
+  details?: string | React.ReactNode
+  confirmLabel?: string
+  cancelLabel?: string
+  variant?: ConfirmVariant
+  icon?: ConfirmIcon
+  onConfirm: () => void
+  onCancel?: () => void
+}
+
 interface UiState {
   addOpen: boolean
   settingsOpen: boolean
@@ -47,6 +62,7 @@ interface UiState {
   shortcutsOpen: boolean
   /** Task id waiting for the user to pick a save location. */
   pickingFor: string | null
+  confirmDialog: ConfirmDialogState | null
 }
 
 interface StoreState {
@@ -93,6 +109,8 @@ interface StoreState {
   chooseFolder(): Promise<void>
   clearFolder(): Promise<void>
   startPicking(id: string): Promise<void>
+  showConfirm(dialog: ConfirmDialogState): void
+  dismissConfirm(): void
 }
 
 const SAMPLE_INTERVAL = 500
@@ -114,7 +132,15 @@ export const useStore = create<StoreState>()(
       filter: 'all',
       search: '',
       toasts: [],
-      ui: { addOpen: false, settingsOpen: false, detailsOpen: false, commandOpen: false, shortcutsOpen: false, pickingFor: null },
+      ui: {
+        addOpen: false,
+        settingsOpen: false,
+        detailsOpen: false,
+        commandOpen: false,
+        shortcutsOpen: false,
+        pickingFor: null,
+        confirmDialog: null,
+      },
       capabilities: { sw: false, fsa: false },
       globalSpeed: 0,
       globalHistory: [],
@@ -631,6 +657,22 @@ export const useStore = create<StoreState>()(
             })
           }
         }
+      },
+
+      showConfirm(dialog) {
+        set((s) => ({ ui: { ...s.ui, confirmDialog: dialog } }))
+      },
+
+      dismissConfirm() {
+        const current = get().ui.confirmDialog
+        if (current?.onCancel) {
+          try {
+            current.onCancel()
+          } catch {
+            /* ignore */
+          }
+        }
+        set((s) => ({ ui: { ...s.ui, confirmDialog: null } }))
       },
     }),
     {

@@ -19,7 +19,39 @@ export function Header() {
   const pauseAll = useStore((s) => s.pauseAll)
   const resumeAll = useStore((s) => s.resumeAll)
   const clearCompleted = useStore((s) => s.clearCompleted)
+  const showConfirm = useStore((s) => s.showConfirm)
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
+
+  const requestClearCompleted = (count: number) => {
+    if (count === 0) return
+    showConfirm({
+      title: `Clear ${count} completed download${count === 1 ? '' : 's'}?`,
+      message:
+        count === 1
+          ? 'This will remove the completed download from your list. The file itself will stay on disk.'
+          : `This will remove all ${count} completed downloads from your list. Files on disk will not be deleted.`,
+      confirmLabel: count === 1 ? 'Clear' : `Clear ${count}`,
+      variant: 'danger',
+      icon: 'clear',
+      onConfirm: () => clearCompleted(),
+    })
+  }
+
+  const requestPauseAll = (count: number) => {
+    if (count === 0) return
+    if (count <= 2) {
+      pauseAll()
+      return
+    }
+    showConfirm({
+      title: `Pause ${count} active download${count === 1 ? '' : 's'}?`,
+      message: `This will pause all ${count} active transfers. You can resume them individually or all at once later.`,
+      confirmLabel: `Pause ${count}`,
+      variant: 'default',
+      icon: 'alert',
+      onConfirm: () => pauseAll(),
+    })
+  }
 
   const summary = useMemo(() => {
     let active = 0, paused = 0, done = 0, remaining = 0, total = 0
@@ -85,8 +117,8 @@ export function Header() {
 
       <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
         <button className="icon-btn" title="Resume all" onClick={resumeAll} disabled={summary.paused === 0}><Play size={16} /></button>
-        <button className="icon-btn" title="Pause all" onClick={pauseAll} disabled={summary.active === 0}><Pause size={16} /></button>
-        <button className="icon-btn" title="Clear completed" onClick={clearCompleted} disabled={summary.done === 0}><Trash2 size={16} /></button>
+        <button className="icon-btn" title="Pause all" onClick={() => requestPauseAll(summary.active)} disabled={summary.active === 0}><Pause size={16} /></button>
+        <button className="icon-btn" title="Clear completed" onClick={() => requestClearCompleted(summary.done)} disabled={summary.done === 0}><Trash2 size={16} /></button>
         <div className="mx-1 h-6 w-px bg-[var(--hairline)]" />
         <button className="icon-btn" title="Toggle theme" onClick={() => update({ theme: isDark ? 'light' : 'dark' })}>{isDark ? <Sun size={16} /> : <Moon size={16} />}</button>
         <button className="icon-btn hidden sm:inline-flex" title="Keyboard shortcuts (?)" onClick={() => setUi({ shortcutsOpen: true })}><Keyboard size={16} /></button>

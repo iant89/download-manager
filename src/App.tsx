@@ -15,6 +15,7 @@ import { Toasts } from './components/Toasts'
 import { MotionPreferences } from './components/MotionPreferences'
 import { DebugConsole } from './components/DebugConsole'
 import { Modal } from './components/ui'
+import { GlobalConfirmDialog } from './components/ConfirmDialog'
 import { isActive } from './types'
 
 export default function App() {
@@ -111,6 +112,7 @@ function AppContent() {
 
       <AddDownloadDialog />
       <SettingsDialog />
+      <GlobalConfirmDialog />
       <Modal open={ui.shortcutsOpen} onClose={() => setUi({ shortcutsOpen: false })} title="Keyboard shortcuts" width="max-w-md">
         <ul className="divide-y text-sm">
           {[['N', 'New download'], ['⌘/Ctrl + V', 'Paste a link to add it'], ['/', 'Focus search'], [',', 'Settings'], ['Shift + P', 'Pause everything'], ['Shift + R', 'Resume everything'], ['Esc', 'Close panel'], ['?', 'This list']].map(([k, v]) => (
