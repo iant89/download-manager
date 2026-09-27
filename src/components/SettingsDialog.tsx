@@ -33,7 +33,7 @@ export function SettingsDialog() {
           <Field label="Theme">
             <Segmented value={settings.theme} onChange={(theme) => update({ theme })} options={[{ value: 'system', label: 'System' }, { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }]} />
           </Field>
-          <Toggle checked={settings.reducedMotion} onChange={(reducedMotion) => update({ reducedMotion })} label="Reduce motion" hint="Disables ambient animation and springs" />
+          <Toggle checked={settings.reducedMotion} onChange={(reducedMotion) => update({ reducedMotion })} label="Reduce motion" hint="Disables animations and transitions; also respects your system preference" />
           <Toggle checked={settings.showSegmentView} onChange={(showSegmentView) => update({ showSegmentView })} label="Show connection details" hint="Per-connection table in the details panel" />
         </Section>
 

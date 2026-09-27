@@ -340,7 +340,7 @@ export const useStore = create<StoreState>()(
         const task = get().tasks[id]
         if (!task) return
         void manager?.pause(id)
-        set((s) => ({ tasks: { ...s.tasks, [id]: { ...task, status: 'paused' } } }))
+        set((s) => ({ tasks: { ...s.tasks, [id]: { ...task, status: 'paused', speed: 0 } } }))
         scheduleSave()
       },
 

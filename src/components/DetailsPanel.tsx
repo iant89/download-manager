@@ -13,7 +13,6 @@ import { SPEED_PRESETS } from './ui'
 import { getManager } from '../store/useStore'
 
 export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
-  const id = useStore((s) => s.selectedId)
   const task = useStore((s) => (s.selectedId ? s.tasks[s.selectedId] : undefined))
   const select = useStore((s) => s.select)
   const pause = useStore((s) => s.pause)
@@ -131,11 +130,10 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
     return (
       <AnimatePresence>
         {task && (
-          <motion.div key={id} className="fixed inset-0 z-40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div key="details-sheet" className="fixed inset-0 z-40" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
             <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => select(null)} />
             <motion.aside
               initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }}
-              transition={{ type: 'spring', stiffness: 360, damping: 36 }}
               className="panel-solid absolute inset-x-0 bottom-0 h-[86dvh] overflow-hidden rounded-t-3xl"
             >
               {content}
@@ -146,26 +144,19 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
     )
   }
 
+  // Keep the shell mounted when selection changes. Waiting for an outgoing
+  // panel to animate out made rapid clicks feel ignored.
   return (
-    <AnimatePresence mode="wait">
-      {task ? (
-        <motion.aside
-          key={id}
-          initial={{ opacity: 0, x: 24 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 24 }}
-          transition={{ type: 'spring', stiffness: 380, damping: 36 }}
-          className="panel h-full overflow-hidden rounded-3xl"
-        >
-          {content}
-        </motion.aside>
-      ) : (
-        <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="panel grid h-full place-items-center rounded-3xl p-6 text-center">
+    <aside className="panel h-full overflow-hidden rounded-3xl" aria-label="Download details">
+      {task ? content : (
+        <div className="grid h-full place-items-center p-6 text-center">
           <div>
             <p className="text-sm font-medium">No download selected</p>
             <p className="mt-1 text-xs text-[var(--muted)]">Click any item to inspect its connections and speed.</p>
           </div>
-        </motion.div>
+        </div>
       )}
-    </AnimatePresence>
+    </aside>
   )
 }
 

@@ -52,12 +52,11 @@ function DownloadCardBase({ task, selected }: Props) {
   return (
     <motion.li
       layout="position"
-      initial={{ opacity: 0, y: 14, scale: 0.98 }}
+      initial={{ opacity: 0, y: 6, scale: 0.99 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.96, transition: { duration: 0.16 } }}
-      transition={{ type: 'spring', stiffness: 320, damping: 32, mass: 0.7 }}
+      exit={{ opacity: 0, scale: 0.99 }}
       className={cn(
-        'group relative rounded-2xl border p-3.5 transition-colors duration-200 sm:p-4',
+        'download-card group relative rounded-2xl border p-3.5 transition-colors duration-100 sm:p-4',
         'bg-[var(--surface)] backdrop-blur-xl',
         selected
           ? 'border-[color-mix(in_oklab,var(--brand)_55%,transparent)] shadow-[0_0_0_1px_color-mix(in_oklab,var(--brand)_25%,transparent),0_18px_40px_-24px_color-mix(in_oklab,var(--brand)_80%,transparent)]'
@@ -68,8 +67,9 @@ function DownloadCardBase({ task, selected }: Props) {
         <button
           type="button"
           onClick={() => select(selected ? null : task.id)}
-          className="shrink-0 rounded-xl transition-transform duration-200 hover:scale-[1.06] active:scale-95"
+          className="shrink-0 rounded-xl transition-transform duration-100 hover:scale-[1.06] active:scale-95"
           aria-label={`Select ${task.filename}`}
+          aria-pressed={selected}
         >
           <FileIcon filename={task.filename} />
         </button>
@@ -82,6 +82,7 @@ function DownloadCardBase({ task, selected }: Props) {
                 onClick={() => select(selected ? null : task.id)}
                 className="block max-w-full truncate text-left text-[0.9rem] font-semibold leading-tight tracking-[-0.01em] hover:underline decoration-[var(--faint)] underline-offset-2"
                 title={task.filename}
+                aria-pressed={selected}
               >
                 {task.filename}
               </button>
@@ -111,7 +112,7 @@ function DownloadCardBase({ task, selected }: Props) {
 
             <div
               className={cn(
-                'flex shrink-0 items-center gap-1 transition-opacity',
+                'card-actions flex shrink-0 items-center gap-1 transition-opacity duration-100',
                 selected
                   ? 'opacity-100'
                   : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100',
@@ -276,4 +277,9 @@ function DownloadCardBase({ task, selected }: Props) {
   )
 }
 
-export const DownloadCard = memo(DownloadCardBase)
+// Subscribe per row: telemetry for one download should not re-render the list
+// controls or every other card. Deleted rows can briefly remain during exit.
+export const DownloadCard = memo(function DownloadCard({ id, selected }: { id: string; selected: boolean }) {
+  const task = useStore((s) => s.tasks[id])
+  return task ? <DownloadCardBase task={task} selected={selected} /> : null
+})

@@ -33,7 +33,7 @@ export function buildRequestHeaders(
     if (!name) continue
     // Forbidden header names are ignored by fetch anyway; filtering keeps the
     // devtools/UI honest about what actually goes on the wire.
-    if (FORBIDDEN.has(name.toLowerCase())) continue
+    if (isForbiddenRequestHeader(name, entry.value)) continue
     out[name] = entry.value
   }
 
@@ -71,6 +71,7 @@ const FORBIDDEN = new Set([
   'host',
   'keep-alive',
   'origin',
+  'permissions-policy',
   'referer',
   'set-cookie',
   'te',
@@ -79,6 +80,14 @@ const FORBIDDEN = new Set([
   'upgrade',
   'via',
 ])
+
+/** Browser-controlled request headers, including reserved prefixes and methods. */
+export function isForbiddenRequestHeader(name: string, value = ''): boolean {
+  const normalized = name.trim().toLowerCase()
+  if (FORBIDDEN.has(normalized) || normalized.startsWith('proxy-') || normalized.startsWith('sec-')) return true
+  return ['x-http-method', 'x-http-method-override', 'x-method-override'].includes(normalized)
+    && value.split(',').some((method) => ['CONNECT', 'TRACE', 'TRACK'].includes(method.trim().toUpperCase()))
+}
 
 /** Rewrites a URL through the user-configured CORS proxy template. */
 export function applyProxy(url: string, template: string): string {

@@ -23,8 +23,7 @@ export function Toasts() {
               layout
               initial={{ opacity: 0, y: 16, scale: 0.96 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.94, transition: { duration: 0.14 } }}
-              transition={{ type: 'spring', stiffness: 420, damping: 32 }}
+              exit={{ opacity: 0, scale: 0.94 }}
               className="panel-solid pointer-events-auto flex w-full max-w-sm items-start gap-3 rounded-2xl px-4 py-3"
             >
               <Icon size={18} style={{ color: TONE[t.kind] }} className="mt-[1px] shrink-0" />

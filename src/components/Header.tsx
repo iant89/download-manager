@@ -49,7 +49,6 @@ export function Header() {
           className="grid h-10 w-10 place-items-center rounded-2xl text-white shadow-lg"
           style={{ background: 'linear-gradient(135deg, var(--accent), var(--brand))' }}
           whileHover={{ rotate: -6, scale: 1.05 }}
-          transition={{ type: 'spring', stiffness: 400, damping: 18 }}
         >
           <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3v11" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" opacity=".6" /></svg>
         </motion.div>
@@ -75,19 +74,16 @@ export function Header() {
         {overallProgress != null && (
           <div className="w-full">
             <div className="h-1 w-28 overflow-hidden rounded-full bg-[color-mix(in_oklab,var(--fg)_10%,transparent)]">
-              <motion.div
-                className="h-full rounded-full"
-                style={{ background: 'linear-gradient(90deg, var(--brand), var(--accent))' }}
-                initial={false}
-                animate={{ width: `${overallProgress * 100}%` }}
-                transition={{ type: 'spring', stiffness: 120, damping: 26 }}
+              <div
+                className="progress-fill h-full w-full rounded-full"
+                style={{ background: 'linear-gradient(90deg, var(--brand), var(--accent))', transform: `scaleX(${overallProgress})` }}
               />
             </div>
           </div>
         )}
       </div>
 
-      <div className="ml-auto flex items-center gap-1.5">
+      <div className="ml-auto flex max-w-full flex-wrap items-center justify-end gap-1.5">
         <button className="icon-btn" title="Resume all" onClick={resumeAll} disabled={summary.paused === 0}><Play size={16} /></button>
         <button className="icon-btn" title="Pause all" onClick={pauseAll} disabled={summary.active === 0}><Pause size={16} /></button>
         <button className="icon-btn" title="Clear completed" onClick={clearCompleted} disabled={summary.done === 0}><Trash2 size={16} /></button>

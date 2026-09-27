@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { it, expect, vi, afterAll } from 'vitest'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import App from './App'
 
 const BASE =
@@ -21,10 +21,11 @@ it('renders, opens the add dialog and enqueues a download', async () => {
   const input = await screen.findByPlaceholderText('https://example.com/file.zip')
   fireEvent.change(input, { target: { value: `${BASE}/testfile/2mb` } })
   fireEvent.click(screen.getByText('Add download'))
-  await waitFor(() => expect(screen.getByText('flux-test-2mb.bin')).toBeTruthy(), { timeout: 12000 })
+  await waitFor(() => expect(screen.getByRole('button', { name: 'flux-test-2mb.bin' })).toBeTruthy(), { timeout: 12000 })
   await act(() => new Promise((r) => setTimeout(r, 1500)))
-  fireEvent.click(screen.getAllByText('flux-test-2mb.bin')[0]!)
-  expect(await screen.findByText('Source')).toBeTruthy()
+  fireEvent.click(screen.getByLabelText('Close details'))
+  fireEvent.click(screen.getByRole('button', { name: 'flux-test-2mb.bin' }))
+  expect(within(screen.getByLabelText('Download details')).getByText('Source')).toBeTruthy()
   // Settings dialog renders
   fireEvent.click(screen.getByTitle('Settings (,)'))
   expect(await screen.findByText('Appearance')).toBeTruthy()
