@@ -213,18 +213,19 @@ export const useStore = create<StoreState>()(
           const active = isActive(task.status)
           const previous = lastSample.bytes[id]
           const received = task.receivedBytes
-          let speed = 0
-          if (active && previous != null && dt > 0) {
-            speed = Math.max(0, ((received - previous) / dt) * 1)
-          }
+          // Bytes that arrived in the interval ending now. Counted even for a
+          // task that just left the active set: a transfer that finishes
+          // between two samples still moved, and dropping that interval is
+          // what left short downloads with an all-zero throughput history.
+          const speed = previous != null && received > previous ? (received - previous) / dt : 0
           // P3-04: ETA / speed uses exponential moving average to avoid
           // noisy instantaneous values: smoothed = alpha*current + (1-alpha)*prev
-          const smoothed = active ? smoothSpeed(task.speed, speed, 0.15) : 0
+          const smoothed = active || speed > 0 ? smoothSpeed(task.speed, speed, 0.15) : 0
 
           // Settled tasks (finished and already decayed to zero) are left
           // untouched so their cards don't re-render on every tick.
           const lastSampled = task.speedHistory.at(-1) ?? 0
-          if (!active && task.speed === 0 && lastSampled === 0) continue
+          if (!active && task.speed === 0 && lastSampled === 0 && speed <= 0) continue
 
           const history = task.speedHistory.length >= HISTORY
             ? [...task.speedHistory.slice(1), smoothed]
@@ -238,11 +239,11 @@ export const useStore = create<StoreState>()(
                 }))
               : null
 
-          if (speed !== task.speed || history.length !== task.speedHistory.length || nextSegments) {
-            nextTasks[id] = { ...task, speed: smoothed, speedHistory: history, segments: nextSegments ?? task.segments }
-            changed = true
-          }
-          if (active) globalSpeed += smoothed
+          // Anything that got this far is either still running or still
+          // decaying, so the sample always has to be published.
+          nextTasks[id] = { ...task, speed: smoothed, speedHistory: history, segments: nextSegments ?? task.segments }
+          changed = true
+          if (active || speed > 0) globalSpeed += smoothed
         }
 
         const globalHistory =

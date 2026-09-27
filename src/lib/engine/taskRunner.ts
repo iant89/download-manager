@@ -145,6 +145,12 @@ export class TaskRunner {
   private generation = 0
   /** Acknowledged-but-not-yet-contiguous ranges per segment. */
   private writtenRanges = new Map<SegmentState, [number, number][]>()
+  /**
+   * Highest network offset reached per segment. Telemetry only: writes are
+   * acknowledged in FLUSH_BYTES-sized blocks, so the written watermark moves
+   * far too coarsely to drive the throughput graphs. This is never persisted.
+   */
+  private seenWatermarks = new Map<SegmentState, number>()
 
   private receivedBytes = 0
   private lastProgressEmit = 0
@@ -398,6 +404,7 @@ export class TaskRunner {
     await this.deps.checkpointStore?.remove(this.id)
     this.generation += 1
     this.writtenRanges.clear()
+    this.seenWatermarks.clear()
     this.currentError = null
     this.outcome = null
     this.splitDone = false
@@ -501,6 +508,7 @@ export class TaskRunner {
   private resetProgress(): void {
     this.generation += 1
     this.writtenRanges.clear()
+    this.seenWatermarks.clear()
     this.receivedBytes = 0
     this.resumeFrom = 0
     this.firstResponseSeen = false
@@ -586,6 +594,7 @@ export class TaskRunner {
     await Promise.allSettled([...this.workers])
     this.generation += 1
     this.writtenRanges.clear()
+    this.seenWatermarks.clear()
     this.plainRetried = true
     this.usedRange = false
     this.supportsRanges = false
@@ -689,6 +698,7 @@ export class TaskRunner {
           // Reuse it as a single stream from byte 0 and kill every sibling.
           this.generation += 1
           this.writtenRanges.clear()
+          this.seenWatermarks.clear()
           this.segmented = false
           this.splitDone = true
           this.usedRange = false
@@ -990,6 +1000,13 @@ export class TaskRunner {
 
         buffer.push(chunk)
         buffered += chunk.byteLength
+        // `offset` is the write cursor (it only advances on flush), so the
+        // network position is the cursor plus everything still buffered.
+        this.markSeen(segment, offset + buffered)
+        // Writes are only acknowledged once a FLUSH_BYTES block lands, which is
+        // far too coarse for the speed readout and the throughput graphs; report
+        // what the network has actually delivered (throttled inside).
+        this.emitProgress()
         if (buffered >= FLUSH_BYTES) await flush(false)
       }
       await flush(true)
@@ -1241,6 +1258,27 @@ export class TaskRunner {
     return total
   }
 
+  /**
+   * Records how far the network has got on a segment, independent of what the
+   * sink has acknowledged. Retries re-read from the written watermark, so the
+   * high-water mark keeps re-reads from inflating the figure.
+   */
+  private markSeen(segment: SegmentState, networkOffset: number): void {
+    const seen = networkOffset - segment.start
+    if (seen > (this.seenWatermarks.get(segment) ?? 0)) this.seenWatermarks.set(segment, seen)
+  }
+
+  /** Bytes the network has delivered, written or still on their way to disk. */
+  private seenBytes(): number {
+    let total = 0
+    for (const seg of this.segments) {
+      const length = Number.isFinite(seg.end) ? seg.end - seg.start + 1 : Number.POSITIVE_INFINITY
+      const seen = Math.min(this.seenWatermarks.get(seg) ?? 0, length)
+      total += Math.max(seg.received, seen)
+    }
+    return total
+  }
+
   private emitSegments(): void {
     this.deps.callbacks.onSegments(this.getSegments())
   }
@@ -1259,7 +1297,10 @@ export class TaskRunner {
     const now = Date.now()
     if (now - this.lastProgressEmit < 150) return
     this.lastProgressEmit = now
-    this.deps.callbacks.onProgress(this.receivedBytes)
+    // Report the further of "written to the target" and "off the network": the
+    // written watermark only moves in FLUSH_BYTES steps, which left the
+    // throughput graphs flat for most of a transfer.
+    this.deps.callbacks.onProgress(Math.max(this.receivedBytes, this.seenBytes()))
     this.emitSegments()
   }
 
@@ -1288,6 +1329,9 @@ export class TaskRunner {
   }
 
   private stopNetwork(reason: string): void {
+    // Nothing more is arriving, so "seen but not yet written" bytes are no
+    // longer in flight: fall back to the written watermark for reporting.
+    this.seenWatermarks.clear()
     for (const controller of this.controllers) controller.abort(new Error(reason))
     this.controllers.clear()
     this.runAbort.abort(new Error(reason))
