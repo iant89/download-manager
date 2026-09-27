@@ -1,5 +1,7 @@
 import type { SaveMode } from '../../../types'
 import { ensureWritePermission, type FsaFileHandle, type FsaWritable } from './fsa'
+import { ChecksumMismatchError, DownloadIntegrityError } from '../errors'
+import { sha256OfBlob } from '../sha256'
 import type { Sink, SinkContext, SinkResult } from './types'
 
 /**
@@ -15,6 +17,8 @@ import type { Sink, SinkContext, SinkResult } from './types'
 export class FsaSink implements Sink {
   readonly mode: SaveMode = 'fsa'
   readonly resumable = true
+  /** Bytes live in a real file; `checkpoint()` commits them to disk. */
+  readonly durable = true
 
   private writable: FsaWritable | null = null
   private cursor = -1
@@ -94,7 +98,24 @@ export class FsaSink implements Sink {
     }
     await writable.close()
     this.writable = null
-    return { filename: this.handle.name, size }
+
+    // FSA writes land in a swap file until close(), so the committed file is
+    // only readable now. Verify what actually reached disk.
+    let checksum: SinkResult['checksum']
+    const file = await this.handle.getFile().catch(() => null)
+    if (file && size > 0 && file.size !== size) {
+      throw new DownloadIntegrityError(`File on disk is ${file.size} bytes, expected ${size}`)
+    }
+    if (this.ctx.checksum) {
+      if (!file) {
+        checksum = { algorithm: 'sha-256', value: null, verified: false }
+      } else {
+        const actual = await sha256OfBlob(file)
+        if (actual !== this.ctx.checksum) throw new ChecksumMismatchError('sha-256', this.ctx.checksum, actual)
+        checksum = { algorithm: 'sha-256', value: actual, verified: true }
+      }
+    }
+    return { filename: this.handle.name, size, checksum }
   }
 
   async abort(reason?: string): Promise<void> {

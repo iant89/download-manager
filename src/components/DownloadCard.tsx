@@ -122,7 +122,8 @@ function DownloadCardBase({ task, selected }: Props) {
                 <button
                   type="button"
                   className="icon-btn"
-                  title="Pause"
+                  title={task.status === 'pausing' ? 'Pausing…' : 'Pause'}
+                  disabled={task.status === 'pausing' || task.status === 'verifying' || task.status === 'finalizing'}
                   onClick={(e) => {
                     e.stopPropagation()
                     pause(task.id)

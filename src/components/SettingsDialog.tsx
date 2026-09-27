@@ -48,6 +48,15 @@ export function SettingsDialog() {
             <Field label={`Retries per connection · ${settings.maxRetries}`}>
               <input type="range" min={0} max={20} value={settings.maxRetries} onChange={(e) => update({ maxRetries: Number(e.target.value) })} className="mt-2 w-full accent-[var(--brand)]" />
             </Field>
+            <Field label={`Connections per host · ${settings.maxConnectionsPerHost}`} hint="Shared by every download from the same server">
+              <input type="range" min={1} max={32} value={settings.maxConnectionsPerHost} onChange={(e) => update({ maxConnectionsPerHost: Number(e.target.value) })} className="mt-2 w-full accent-[var(--brand)]" />
+            </Field>
+            <Field label={`Total connections · ${settings.maxTotalConnections}`} hint="Across all downloads">
+              <input type="range" min={4} max={128} step={4} value={settings.maxTotalConnections} onChange={(e) => update({ maxTotalConnections: Number(e.target.value) })} className="mt-2 w-full accent-[var(--brand)]" />
+            </Field>
+            <Field label={`Memory limit · ${settings.memoryLimitMB} MB`} hint="In-memory downloads larger than this fail instead of exhausting RAM">
+              <input type="range" min={64} max={2048} step={64} value={settings.memoryLimitMB} onChange={(e) => update({ memoryLimitMB: Number(e.target.value) })} className="mt-2 w-full accent-[var(--brand)]" />
+            </Field>
             <Field label="Global speed limit">
               <div className="flex flex-wrap gap-1.5">
                 {SPEED_PRESETS.map((p) => (

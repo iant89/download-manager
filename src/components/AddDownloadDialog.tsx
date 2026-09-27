@@ -3,6 +3,8 @@ import { ChevronDown, Link2, LoaderCircle, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 
 import { useStore } from '../store/useStore'
+import { PRIORITY_LEVELS } from '../lib/engine/scheduler'
+import { isValidSha256 } from '../lib/engine/sha256'
 import type { AuthConfig, HeaderEntry } from '../types'
 import { DEFAULT_AUTH } from '../types'
 import { guessFilename, isForbiddenRequestHeader } from '../lib/http'
@@ -21,9 +23,12 @@ export function AddDownloadDialog() {
   const [speedLimit, setSpeedLimit] = useState(0)
   const [auth, setAuth] = useState<AuthConfig>({ ...DEFAULT_AUTH })
   const [headers, setHeaders] = useState<HeaderEntry[]>([])
+  const [checksum, setChecksum] = useState('')
+  const [priority, setPriority] = useState(0)
   const [advanced, setAdvanced] = useState(false)
   const [busy, setBusy] = useState(false)
 
+  const checksumInvalid = checksum.trim() !== '' && !isValidSha256(checksum)
   const urlInput = useRef<HTMLInputElement>(null)
   const urlEdited = useRef(false)
   const selectClipboardUrl = useRef(false)
@@ -38,6 +43,8 @@ export function AddDownloadDialog() {
     setSpeedLimit(0)
     setAuth({ ...DEFAULT_AUTH })
     setHeaders([])
+    setChecksum('')
+    setPriority(0)
     setAdvanced(false)
     setBusy(false)
     urlEdited.current = false
@@ -83,7 +90,7 @@ export function AddDownloadDialog() {
     const currentSession = session.current
     setBusy(true)
     try {
-      const id = await addDownload({ url: resolvedUrl, filename: filename || undefined, connections, speedLimit, auth, headers })
+      const id = await addDownload({ url: resolvedUrl, filename: filename || undefined, connections, speedLimit, auth, headers, priority, checksum: checksum.trim() || undefined })
       if (id && session.current === currentSession) {
         close()
       }
@@ -161,7 +168,7 @@ export function AddDownloadDialog() {
 
         <button type="button" aria-expanded={advanced} aria-controls="download-advanced" onClick={() => setAdvanced((a) => !a)} className="flex items-center gap-1.5 text-xs font-medium text-[var(--muted)] hover:text-[var(--fg)]">
           <motion.span animate={{ rotate: advanced ? 180 : 0 }}><ChevronDown size={14} /></motion.span>
-          Authentication, headers & limits
+          Authentication, headers, limits & integrity
         </button>
 
         <AnimatePresence initial={false}>
@@ -208,6 +215,38 @@ export function AddDownloadDialog() {
                       </button>
                     ))}
                   </div>
+                </Field>
+
+                <Field label="Priority" hint="Higher priority downloads start first when the queue is full.">
+                  <div className="flex flex-wrap gap-1.5" role="group" aria-label="Priority">
+                    {PRIORITY_LEVELS.map((p) => (
+                      <button
+                        key={p.value}
+                        type="button"
+                        aria-pressed={priority === p.value}
+                        onClick={() => setPriority(p.value)}
+                        className={`chip ${priority === p.value ? 'border-[var(--brand)] text-[var(--fg)]' : ''}`}
+                      >
+                        {p.label}
+                      </button>
+                    ))}
+                  </div>
+                </Field>
+
+                <Field
+                  label="Expected SHA-256"
+                  hint={checksumInvalid ? 'Needs 64 hexadecimal characters.' : 'Optional. The finished file is hashed and must match.'}
+                >
+                  <input
+                    className="field font-mono text-[12px]"
+                    placeholder="e3b0c44298fc1c149afbf4c8996fb924…"
+                    aria-label="Expected SHA-256"
+                    aria-invalid={checksumInvalid}
+                    spellCheck={false}
+                    autoComplete="off"
+                    value={checksum}
+                    onChange={(e) => setChecksum(e.target.value)}
+                  />
                 </Field>
 
                 <Field label="Custom headers" hint="Cookies, Origin and other forbidden headers cannot be set by a web page.">

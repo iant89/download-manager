@@ -10,7 +10,6 @@ import { del, get, set } from 'idb-keyval'
 
 import type {
   AuthConfig,
-  DownloadStatus,
   DownloadTask,
   FilterKey,
   HeaderEntry,
@@ -18,9 +17,12 @@ import type {
   SegmentState,
   Settings,
 } from '../types'
-import { DEFAULT_AUTH, DEFAULT_SETTINGS, isActive } from '../types'
-import { applyProxy, guessFilename, safeFilename } from '../lib/http'
+import { DEFAULT_AUTH, DEFAULT_SETTINGS, EMPTY_DIAGNOSTICS, isActive } from '../types'
+import { guessFilename, safeFilename } from '../lib/http'
+import { RequestResolver } from '../lib/requestResolver'
 import { DownloadManager, type ManagerEvent } from '../lib/engine/manager'
+import type { DownloadCheckpoint } from '../lib/engine/checkpoint'
+import { isValidSha256, normalizeChecksum } from '../lib/engine/sha256'
 import { handleStore } from '../lib/engine/handleStore'
 import { bootstrapSinks, getSinkCapabilities, refreshSinkCapabilities, resolveSaveMode } from '../lib/engine/sinkFactory'
 import { ensureWritePermission, isFsaSupported, pickDirectory, pickSaveFile, PickerCancelledError, type FsaFileHandle } from '../lib/engine/sinks/fsa'
@@ -76,6 +78,7 @@ interface StoreState {
   clearCompleted(): void
   retryFailed(): void
   updateTask(id: string, patch: Partial<DownloadTask>): void
+  setPriority(id: string, priority: number): void
 
   // ui
   select(id: string | null): void
@@ -96,6 +99,7 @@ const HISTORY = 80
 const GLOBAL_HISTORY = 120
 
 let manager: DownloadManager | null = null
+const resolver = new RequestResolver(() => useStore.getState().settings)
 let lastSample: { at: number; bytes: Record<string, number> } = { at: Date.now(), bytes: {} }
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -130,34 +134,26 @@ export const useStore = create<StoreState>()(
         if (persisted) {
           const tasks: Record<string, DownloadTask> = {}
           const order: string[] = []
+          const checkpoints = new Map<string, DownloadCheckpoint>()
+          let corrupt = 0
           for (const task of persisted) {
-            // Nothing can keep downloading across a reload: freeze the work so
-            // the user decides what to resume (and where the bytes go).
-            const status: DownloadStatus = isActive(task.status) ? 'paused' : task.status
-            const restored: DownloadTask = {
-              ...task,
-              status,
-              speed: 0,
-              speedHistory: [],
-              awaitingTarget: false,
-              resultUrl: null,
-              segments: task.segments.map((s) => ({ ...s, status: 'idle' as const, speed: 0 })),
-            }
+            const restored = await restoreTask(task, (cp) => checkpoints.set(task.id, cp), () => (corrupt += 1))
             tasks[task.id] = restored
             order.push(task.id)
-            if (task.handleKey) {
-              const handle = await handleStore.getFile(task.id)
-              if (!handle) {
-                restored.handleKey = null
-                restored.saveMode = null
-              }
-            }
           }
           set({ tasks, order })
           for (const id of order) {
             const task = tasks[id]!
-            manager?.createRunner(task, task.receivedBytes)
+            manager?.createRunner(task, checkpoints.get(id) ?? null)
           }
+          if (corrupt > 0) {
+            get().pushToast({
+              kind: 'warning',
+              title: 'Some resume data was unreadable',
+              message: `${corrupt} download${corrupt === 1 ? '' : 's'} will restart from the beginning.`,
+            })
+          }
+          scheduleSave()
         }
 
         startTicker()
@@ -249,7 +245,25 @@ export const useStore = create<StoreState>()(
         const id = newId()
         const filename = safeFilename(input.filename?.trim() || guessFilename(url))
         const connections = input.connections ?? settings.defaultConnections
-        const effectiveUrl = settings.proxyMode === 'always' && settings.proxyTemplate ? applyProxy(url, settings.proxyTemplate) : url
+        const auth = input.auth ?? { ...DEFAULT_AUTH }
+        const headers = input.headers ?? []
+        let expectedChecksum: string | null = null
+        if (input.checksum?.trim()) {
+          if (!isValidSha256(input.checksum)) {
+            state.pushToast({ kind: 'error', title: 'Invalid SHA-256', message: 'Expected 64 hexadecimal characters.' })
+            return null
+          }
+          expectedChecksum = normalizeChecksum(input.checksum)
+        }
+        const request = resolver.resolve({ url, auth, headers })
+        const effectiveUrl = request.url
+        if (request.exposesCredentials) {
+          state.pushToast({
+            kind: 'warning',
+            title: 'Credentials sent via proxy',
+            message: 'Auth headers for this download will pass through your CORS proxy.',
+          })
+        }
 
         // The save dialog needs a user gesture, so ask before we touch the network.
         let handle: FsaFileHandle | null = null
@@ -304,8 +318,8 @@ export const useStore = create<StoreState>()(
           connections,
           speedLimit: input.speedLimit ?? 0,
           maxRetries: input.maxRetries ?? settings.maxRetries,
-          auth: input.auth ?? { ...DEFAULT_AUTH },
-          headers: input.headers ?? [],
+          auth,
+          headers,
           status: settings.startImmediately ? 'queued' : 'paused',
           receivedBytes: 0,
           createdAt: Date.now(),
@@ -317,9 +331,15 @@ export const useStore = create<StoreState>()(
           speedHistory: [],
           speed: 0,
           saveMode: null,
-          retries: 0,
+          terminalFailureCount: 0,
+          priority: input.priority ?? 0,
+          queuedAt: Date.now(),
+          expectedChecksum,
+          checksumVerified: null,
+          identity: null,
+          diagnostics: { ...EMPTY_DIAGNOSTICS },
           effectiveUrl,
-          proxyUsed: settings.proxyMode === 'always' && Boolean(settings.proxyTemplate),
+          proxyUsed: request.proxyUsed,
           handleKey: handle ? `file:${id}` : null,
           awaitingTarget: false,
           resultUrl: null,
@@ -343,7 +363,7 @@ export const useStore = create<StoreState>()(
           status: task.status,
         })
         manager?.createRunner(task)
-        if (settings.startImmediately) manager?.pump(get().order)
+        if (settings.startImmediately) manager?.enqueue(id)
         scheduleSave()
         return id
       },
@@ -352,8 +372,14 @@ export const useStore = create<StoreState>()(
         const task = get().tasks[id]
         if (!task) return
         debug.info('store', `Pause ${task.filename}`, { id })
+        // Waiting in the queue is scheduling state the store owns; anything
+        // running reports pausing → paused itself (plan P1-02).
+        // Speed is UI telemetry and drops immediately either way.
+        const settleHere = task.status === 'queued' || !manager?.has(id)
+        set((s) => ({
+          tasks: { ...s.tasks, [id]: { ...s.tasks[id]!, speed: 0, ...(settleHere ? { status: 'paused' as const } : {}) } },
+        }))
         void manager?.pause(id)
-        set((s) => ({ tasks: { ...s.tasks, [id]: { ...task, status: 'paused', speed: 0 } } }))
         scheduleSave()
       },
 
@@ -368,10 +394,10 @@ export const useStore = create<StoreState>()(
           return
         }
         if (task.status === 'queued' || task.status === 'paused') {
-          void manager?.start(id)
-          set((s) => ({
-            tasks: { ...s.tasks, [id]: { ...task, status: 'downloading', error: null, startedAt: task.startedAt ?? Date.now() } },
-          }))
+          // Resuming goes through the scheduler like everything else.
+          set((s) => ({ tasks: { ...s.tasks, [id]: { ...s.tasks[id]!, status: 'queued', error: null } } }))
+          manager?.enqueue(id)
+          scheduleSave()
         }
       },
 
@@ -391,9 +417,24 @@ export const useStore = create<StoreState>()(
         if (!task) return
         debug.info('store', `Retry ${task.filename}`, { id, previousError: task.error })
         set((s) => ({
-          tasks: { ...s.tasks, [id]: { ...task, status: 'queued', error: null, receivedBytes: 0, segments: [], startedAt: null, completedAt: null } },
+          tasks: {
+            ...s.tasks,
+            [id]: {
+              ...task,
+              status: 'queued',
+              error: null,
+              receivedBytes: 0,
+              segments: [],
+              startedAt: null,
+              completedAt: null,
+              checksumVerified: null,
+              identity: null,
+              diagnostics: { ...EMPTY_DIAGNOSTICS },
+            },
+          },
         }))
         void manager?.retry(id)
+        scheduleSave()
       },
 
       remove(id) {
@@ -419,32 +460,22 @@ export const useStore = create<StoreState>()(
       pauseAll() {
         const { tasks, order } = get()
         for (const id of order) {
-          if (isActive(tasks[id]?.status ?? 'completed')) void manager?.pause(id)
+          if (isActive(tasks[id]?.status ?? 'completed')) get().pause(id)
         }
-        set((s) => {
-          const next = { ...s.tasks }
-          for (const id of order) {
-            const task = next[id]
-            if (task && isActive(task.status)) next[id] = { ...task, status: 'paused', speed: 0 }
-          }
-          return { tasks: next }
-        })
-        scheduleSave()
       },
 
       resumeAll() {
-        const { tasks, order, settings } = get()
-        const limit = Math.max(1, settings.maxConcurrentDownloads)
-        let started = 0
-        for (const id of [...order].reverse()) {
-          const task = tasks[id]
-          if (!task) continue
-          if (task.status === 'paused' || task.status === 'failed' || task.status === 'queued') {
-            if (started >= limit) break
-            started += 1
-            if (task.status === 'failed') get().retry(id)
-            else get().resume(id)
-          }
+        // Queue everything in its original order; the scheduler enforces
+        // concurrency and priority.
+        const { tasks, order } = get()
+        const ids = [...order].reverse().filter((id) => {
+          const status = tasks[id]?.status
+          return status === 'paused' || status === 'failed' || status === 'queued'
+        })
+        ids.sort((a, b) => (tasks[a]!.queuedAt ?? 0) - (tasks[b]!.queuedAt ?? 0))
+        for (const id of ids) {
+          if (tasks[id]!.status === 'failed') get().retry(id)
+          else get().resume(id)
         }
       },
 
@@ -483,6 +514,11 @@ export const useStore = create<StoreState>()(
         scheduleSave()
       },
 
+      setPriority(id, priority) {
+        get().updateTask(id, { priority })
+        manager?.setPriority(id, priority)
+      },
+
       select(id) {
         set({ selectedId: id })
       },
@@ -502,14 +538,13 @@ export const useStore = create<StoreState>()(
       updateSettings(patch) {
         debug.debug('settings', `Updated ${Object.keys(patch).join(', ')}`, patch)
         set((s) => ({ settings: { ...s.settings, ...patch } }))
-        if (patch.globalSpeedLimit != null) manager?.setGlobalLimit(patch.globalSpeedLimit)
-        if (patch.maxConcurrentDownloads != null) manager?.pump(get().order)
+        manager?.applySettings(get().settings)
         scheduleSave()
       },
 
       resetSettings() {
         set({ settings: { ...DEFAULT_SETTINGS, defaultFolderName: null } })
-        manager?.setGlobalLimit(DEFAULT_SETTINGS.globalSpeedLimit)
+        manager?.applySettings(get().settings)
       },
 
       pushToast(toast) {
@@ -588,6 +623,11 @@ export const useStore = create<StoreState>()(
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({ settings: state.settings }) as unknown as StoreState,
       version: 1,
+      // Settings saved by an older build lack newer keys; fill them from defaults.
+      merge: (persisted, current) => {
+        const saved = (persisted as Partial<StoreState> | undefined)?.settings
+        return { ...current, settings: { ...DEFAULT_SETTINGS, ...current.settings, ...(saved ?? {}) } }
+      },
     },
   ),
 )
@@ -623,6 +663,7 @@ function handleManagerEvent(event: ManagerEvent): void {
             filename: event.filename ?? task.filename,
             mime: event.mime ?? task.mime,
             supportsRanges: event.supportsRanges || task.supportsRanges,
+            identity: event.identity,
           },
         },
       }))
@@ -642,13 +683,17 @@ function handleManagerEvent(event: ManagerEvent): void {
       }
       if (event.status === 'downloading' && !task.startedAt) patch.startedAt = Date.now()
       if (event.status === 'completed') patch.completedAt = Date.now()
-      if (event.status === 'failed') patch.retries = task.retries + 1
+      if (event.status === 'failed') patch.terminalFailureCount = (task.terminalFailureCount ?? 0) + 1
+      if (event.status === 'paused' || event.status === 'failed' || event.status === 'canceled') patch.speed = 0
       useStore.setState((s) => ({ tasks: { ...s.tasks, [event.id]: { ...task, ...patch } } }))
       if (event.status === 'failed') maybeRetryWithProxy(task, event.error)
-      if (event.status === 'completed' || event.status === 'failed' || event.status === 'canceled') {
-        manager?.pump(useStore.getState().order)
+      if (event.status === 'completed' || event.status === 'failed' || event.status === 'canceled' || event.status === 'paused') {
         scheduleSave()
       }
+      break
+    }
+    case 'stats': {
+      useStore.setState((s) => ({ tasks: { ...s.tasks, [event.id]: { ...task, diagnostics: event.diagnostics } } }))
       break
     }
     case 'progress': {
@@ -673,6 +718,7 @@ function handleManagerEvent(event: ManagerEvent): void {
         receivedBytes: event.size || task.receivedBytes,
         saveMode: event.saveMode,
         resultUrl: event.url ?? null,
+        checksumVerified: event.checksum ? event.checksum.verified : null,
         speed: 0,
         segments: task.segments.map((s) => ({ ...s, status: 'done' as const, speed: 0 })),
       }
@@ -731,6 +777,8 @@ function logManagerEvent(event: ManagerEvent, task: DownloadTask): void {
     case 'saveMode':
       debug.info('engine', `${name}: saving via ${event.mode}`, { id: event.id })
       return
+    case 'stats':
+      return
     case 'complete':
       debug.info('engine', `${name}: complete (${event.size} bytes via ${event.saveMode})`, { id: event.id })
       return
@@ -739,29 +787,37 @@ function logManagerEvent(event: ManagerEvent, task: DownloadTask): void {
 
 /** Cross-origin fetches fail with an opaque CORS error; a proxy often fixes it. */
 function maybeRetryWithProxy(task: DownloadTask, error?: string | null): void {
-  const settings = useStore.getState().settings
-  if (settings.proxyMode !== 'auto' || !settings.proxyTemplate) return
-  if (task.proxyUsed) return
-  const looksLikeCors =
-    !error || /failed to fetch|networkerror|load failed|blocked by cors|blocked/i.test(error)
-  if (!looksLikeCors) return
-
-  const proxied = applyProxy(task.url, settings.proxyTemplate)
+  if (!resolver.shouldRetryViaProxy(error, task.proxyUsed)) return
+  const request = resolver.resolveViaProxy({ url: task.url, auth: task.auth, headers: task.headers })
   useStore.setState((s) => ({
     tasks: {
       ...s.tasks,
-      [task.id]: { ...task, effectiveUrl: proxied, proxyUsed: true, status: 'queued', error: null, receivedBytes: 0, segments: [] },
+      [task.id]: {
+        ...s.tasks[task.id]!,
+        effectiveUrl: request.url,
+        proxyUsed: true,
+        status: 'queued',
+        error: null,
+        receivedBytes: 0,
+        segments: [],
+        identity: null,
+      },
     },
   }))
   useStore.getState().pushToast({
     kind: 'info',
     title: 'Retrying through the CORS proxy',
-    message: 'The direct request was blocked by the browser.',
+    message: request.exposesCredentials
+      ? 'The direct request was blocked. Note: your credentials will pass through the proxy.'
+      : 'The direct request was blocked by the browser.',
   })
   manager?.destroy(task.id)
   const updated = useStore.getState().tasks[task.id]
-  if (updated) manager?.createRunner(updated)
-  manager?.pump(useStore.getState().order)
+  if (updated) {
+    void manager?.checkpoints.remove(task.id)
+    manager?.createRunner(updated)
+    manager?.enqueue(task.id)
+  }
 }
 
 function triggerDownload(url: string, filename: string): void {
@@ -780,7 +836,85 @@ function triggerDownload(url: string, filename: string): void {
 
 const TASKS_KEY = 'flux.tasks.v1'
 
-type PersistedTask = DownloadTask
+/** Older persisted tasks lack newer fields; `retries` was renamed. */
+type PersistedTask = DownloadTask & { retries?: number }
+
+export function normalizeTask(t: PersistedTask): DownloadTask {
+  const { retries, ...rest } = t
+  return {
+    ...rest,
+    speedHistory: t.speedHistory ?? [],
+    segments: t.segments ?? [],
+    headers: t.headers ?? [],
+    terminalFailureCount: t.terminalFailureCount ?? retries ?? 0,
+    priority: t.priority ?? 0,
+    queuedAt: t.queuedAt ?? t.createdAt ?? 0,
+    expectedChecksum: t.expectedChecksum ?? null,
+    checksumVerified: t.checksumVerified ?? null,
+    identity: t.identity ?? null,
+    diagnostics: { ...EMPTY_DIAGNOSTICS, ...(t.diagnostics ?? {}) },
+  }
+}
+
+/**
+ * Brings one persisted task back after a reload (plan P0-03 / P0-10).
+ *
+ * Nothing keeps downloading across a reload, so active work is frozen as
+ * `paused` — except a browser stream, whose download already died with the
+ * page: that becomes `failed`. Partial progress is only kept when a valid
+ * checkpoint exists *and* its bytes are durable (a file handle we still
+ * have); otherwise progress is reset rather than displayed as resumable.
+ */
+export async function restoreTask(
+  task: DownloadTask,
+  onCheckpoint: (checkpoint: DownloadCheckpoint) => void,
+  onCorrupt: () => void,
+): Promise<DownloadTask> {
+  const wasActive = isActive(task.status)
+  const restored: DownloadTask = {
+    ...task,
+    speed: 0,
+    speedHistory: [],
+    awaitingTarget: false,
+    resultUrl: null,
+    segments: task.segments.map((s) => ({ ...s, status: s.status === 'done' ? ('done' as const) : ('idle' as const), speed: 0 })),
+  }
+  if (task.handleKey && !(await handleStore.getFile(task.id))) {
+    restored.handleKey = null
+    restored.saveMode = null
+  }
+  if (task.status === 'completed' || task.status === 'canceled') return restored
+
+  if (wasActive && task.saveMode === 'stream' && task.status !== 'queued') {
+    restored.status = 'failed'
+    restored.error = 'The browser download stream was interrupted by the reload. Retry to start over.'
+  } else if (wasActive) {
+    restored.status = 'paused'
+  }
+
+  let checkpoint: DownloadCheckpoint | null = null
+  try {
+    checkpoint = (await manager?.checkpoints.load(task.id)) ?? null
+  } catch (error) {
+    debug.warn('store', `Discarding unreadable checkpoint for ${task.filename}`, { id: task.id, error: String(error) })
+    await manager?.checkpoints.remove(task.id).catch(() => undefined)
+    onCorrupt()
+  }
+
+  const usable = checkpoint != null && checkpoint.saveMode === 'fsa' && restored.handleKey != null && restored.status === 'paused'
+  if (usable) {
+    onCheckpoint(checkpoint!)
+    restored.receivedBytes = checkpoint!.bytesWritten
+    restored.totalBytes = checkpoint!.resource.totalBytes ?? restored.totalBytes
+    restored.identity = checkpoint!.resource
+    restored.supportsRanges = checkpoint!.supportsRanges
+  } else {
+    if (checkpoint) await manager?.checkpoints.remove(task.id).catch(() => undefined)
+    restored.receivedBytes = 0
+    restored.segments = []
+  }
+  return restored
+}
 
 async function loadTasks(): Promise<DownloadTask[] | null> {
   try {
@@ -788,7 +922,7 @@ async function loadTasks(): Promise<DownloadTask[] | null> {
     if (!raw || !Array.isArray(raw)) return null
     return raw
       .filter((t) => t && typeof t.id === 'string' && typeof t.url === 'string')
-      .map((t) => ({ ...t, speedHistory: t.speedHistory ?? [], segments: t.segments ?? [], headers: t.headers ?? [] }))
+      .map(normalizeTask)
   } catch {
     return null
   }

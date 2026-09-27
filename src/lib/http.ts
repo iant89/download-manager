@@ -17,6 +17,10 @@ export interface ProbeResult {
   filename: string | null
   /** True only when we positively confirmed range support. */
   supportsRanges: boolean
+  /** Raw `Accept-Ranges` value, when readable ("bytes", "none"). */
+  acceptsRangesHeader: string | null
+  etag: string | null
+  lastModified: string | null
 }
 
 const SAFE_FILENAME = /[^\p{L}\p{N}._\-()[\] ]+/gu
@@ -174,23 +178,40 @@ export class HttpError extends Error {
     message: string,
     readonly status: number,
     readonly kind: 'http' | 'network' | 'aborted' = 'http',
+    /** Parsed `Retry-After`, when the server sent one we could read. */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message)
     this.name = 'HttpError'
   }
 }
 
-/** Cheap HEAD probe used to learn the size before splitting into segments. */
+/**
+ * Resource probe (plan P2-08): one HEAD request that learns everything we can
+ * before committing to a download plan. HEAD is frequently blocked (405/501)
+ * or refused by CORS; every field then stays null and the first GET fills in
+ * what it can.
+ *
+ * Note: cross-origin, only CORS-safelisted headers are readable unless the
+ * server lists the rest in Access-Control-Expose-Headers. Content-Length,
+ * Content-Type and Last-Modified are safelisted; ETag, Accept-Ranges and
+ * Content-Disposition are not.
+ */
 export async function probeResource(
   url: string,
   headers: Record<string, string>,
   signal: AbortSignal,
 ): Promise<ProbeResult> {
-  let headOk = false
-  let totalBytes: number | null = null
-  let contentType: string | null = null
-  let filename: string | null = null
-  let finalUrl = url
+  const result: ProbeResult = {
+    finalUrl: url,
+    totalBytes: null,
+    contentType: null,
+    filename: null,
+    supportsRanges: false,
+    acceptsRangesHeader: null,
+    etag: null,
+    lastModified: null,
+  }
 
   try {
     const res = await fetch(url, {
@@ -201,30 +222,27 @@ export async function probeResource(
       mode: 'cors',
       credentials: 'omit',
     })
-    finalUrl = res.url || url
-    headOk = res.ok
+    result.finalUrl = res.url || url
     if (res.ok) {
       const len = res.headers.get('Content-Length')
       if (len) {
         const parsed = Number.parseInt(len, 10)
-        if (Number.isFinite(parsed) && parsed >= 0) totalBytes = parsed
+        if (Number.isFinite(parsed) && parsed >= 0) result.totalBytes = parsed
       }
-      contentType = res.headers.get('Content-Type')
-      filename = parseContentDispositionFilename(res.headers.get('Content-Disposition'))
+      result.contentType = res.headers.get('Content-Type')
+      result.filename = parseContentDispositionFilename(res.headers.get('Content-Disposition'))
+      const accept = res.headers.get('Accept-Ranges')
+      result.acceptsRangesHeader = accept ? accept.trim().toLowerCase() : null
+      result.supportsRanges = result.acceptsRangesHeader === 'bytes'
+      result.etag = res.headers.get('ETag')
+      result.lastModified = res.headers.get('Last-Modified')
     }
   } catch (error) {
     if (isAbort(error)) throw error
-    // HEAD is frequently blocked (405/501) or disallowed by CORS policy — the
-    // caller falls back to learning the size from the first GET response.
+    // Blocked HEAD: the caller learns the size from the first GET response.
   }
 
-  return {
-    finalUrl,
-    totalBytes,
-    contentType,
-    filename: filename ?? (headOk ? null : null),
-    supportsRanges: false,
-  }
+  return result
 }
 
 export function isAbort(error: unknown): boolean {

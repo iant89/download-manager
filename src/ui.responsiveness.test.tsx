@@ -8,7 +8,7 @@ import { DetailsPanel } from './components/DetailsPanel'
 import { MotionPreferences } from './components/MotionPreferences'
 import { SegmentBar } from './components/SegmentBar'
 import { useStore } from './store/useStore'
-import { DEFAULT_AUTH, DEFAULT_SETTINGS, type DownloadTask } from './types'
+import { DEFAULT_AUTH, EMPTY_DIAGNOSTICS, DEFAULT_SETTINGS, type DownloadTask } from './types'
 
 // Track list-control renders without mocking the store or the download cards.
 const { searchRenders } = vi.hoisted(() => ({ searchRenders: vi.fn() }))
@@ -24,7 +24,8 @@ function task(id: string, status: DownloadTask['status'] = 'downloading'): Downl
     status, totalBytes: 1000, receivedBytes: 100, connections: 8, speedLimit: 0, maxRetries: 5,
     auth: { ...DEFAULT_AUTH }, headers: [], createdAt: Date.now(), startedAt: null, completedAt: null,
     error: null, supportsRanges: true, segments: [], speed: 256, speedHistory: [], saveMode: 'memory',
-    retries: 0, effectiveUrl: `https://example.com/${id}.zip`, proxyUsed: false, handleKey: null,
+    terminalFailureCount: 0, priority: 0, queuedAt: 0, expectedChecksum: null, checksumVerified: null,
+    identity: null, diagnostics: { ...EMPTY_DIAGNOSTICS }, effectiveUrl: `https://example.com/${id}.zip`, proxyUsed: false, handleKey: null,
     awaitingTarget: false, resultUrl: null,
   }
 }

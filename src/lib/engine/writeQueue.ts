@@ -31,18 +31,50 @@ export class WriteQueue {
     return this.pendingBytes
   }
 
-  submit(offset: number, chunk: Uint8Array): void {
-    if (this.stopped) return
-    this.queue.push({ offset, chunk })
+  /**
+   * Queues a write. The returned promise settles once the sink has
+   * acknowledged (or rejected) the bytes; `onWritten` fires at the same moment.
+   * The runner uses this to advance its *written* watermark, which is distinct
+   * from how much has been read off the network (plan P0-08).
+   *
+   * Returns null when the queue is stopped and the write was dropped.
+   */
+  submit(offset: number, chunk: Uint8Array, onWritten?: (offset: number, length: number) => void): Promise<void> | null {
+    if (this.stopped) return null
+    let resolve!: () => void
+    let reject!: (error: unknown) => void
+    const done = new Promise<void>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    // Callers that don't await must not trigger unhandled-rejection noise.
+    done.catch(() => undefined)
+    this.queue.push({ offset, chunk, onWritten, resolve, reject })
     this.pendingBytes += chunk.byteLength
     this.pump()
+    return done
   }
 
-  /** Resolves once fewer than `lowWater` bytes are still unacknowledged. */
-  async drain(): Promise<void> {
+  /**
+   * Resolves once fewer than `lowWater` bytes are still unacknowledged, or as
+   * soon as `signal` aborts (a pausing worker must never wait on writes that
+   * can't complete, e.g. chunks parked in a stream sink).
+   */
+  async drain(signal?: AbortSignal): Promise<void> {
     if (this.error) throw this.error
-    if (this.pendingBytes < this.lowWater) return
-    await new Promise<void>((resolve) => this.drainWaiters.push(resolve))
+    if (this.pendingBytes < this.lowWater || signal?.aborted) return
+    await new Promise<void>((resolve) => {
+      const onAbort = () => {
+        this.drainWaiters = this.drainWaiters.filter((w) => w !== wake)
+        resolve()
+      }
+      const wake = () => {
+        signal?.removeEventListener('abort', onAbort)
+        resolve()
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+      this.drainWaiters.push(wake)
+    })
     if (this.error) throw this.error
   }
 
@@ -62,15 +94,24 @@ export class WriteQueue {
    * arrive (out-of-order chunks after the network was aborted) are cut loose
    * by the timeout instead of hanging a pause forever.
    */
-  async stop(timeoutMs = 4000): Promise<void> {
+  async stop(timeoutMs = 4000): Promise<boolean> {
     this.stopped = true
     this.pump()
+    let drained = false
     const settled = new Promise<void>((resolve) => {
       if (this.queue.length === 0 && this.inflight === 0) resolve()
       else this.settleWaiters.push(resolve)
+    }).then(() => {
+      drained = true
     })
     await Promise.race([settled, sleep(timeoutMs)])
     this.releaseWaiters()
+    return drained
+  }
+
+  /** The first write error, if any (writes after it are still dispatched). */
+  get failure(): Error | null {
+    return this.error
   }
 
   private pump(): void {
@@ -84,9 +125,17 @@ export class WriteQueue {
         const item = this.queue.shift()!
         this.inflight += 1
         this.sink.write(item.offset, item.chunk).then(
-          () => this.settleWrite(item),
+          () => {
+            try {
+              item.onWritten?.(item.offset, item.chunk.byteLength)
+            } finally {
+              this.settleWrite(item)
+              item.resolve()
+            }
+          },
           (error) => {
             this.settleWrite(item)
+            item.reject(error)
             if (!this.error) {
               this.error = error instanceof Error ? error : new Error(String(error))
               this.releaseWaiters()
@@ -122,6 +171,9 @@ export class WriteQueue {
 interface PendingWrite {
   offset: number
   chunk: Uint8Array
+  onWritten?: (offset: number, length: number) => void
+  resolve: () => void
+  reject: (error: unknown) => void
 }
 
 function sleep(ms: number): Promise<void> {

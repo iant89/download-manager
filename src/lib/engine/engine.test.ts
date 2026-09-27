@@ -20,6 +20,7 @@ const BASE =
 class TestSink implements Sink {
   readonly mode = 'memory' as const
   resumable = true as boolean
+  durable = false as boolean
   buffer = new Uint8Array(0)
   writes = 0
   async write(offset: number, chunk: Uint8Array): Promise<void> {
@@ -195,7 +196,7 @@ describe('TaskRunner', () => {
     let reject!: (e: Error) => void
     const done = new Promise<SinkResult>((res, rej) => { resolve = res; reject = rej })
     const runner = new TaskRunner(
-      { id: 'nr', url: `${BASE}/testfile/20mb?delay=2`, filename: 'nr.bin', connections: 4, speedLimit: 0, maxRetries: 3, auth: DEFAULT_AUTH, headers: [] },
+      { id: 'nr', url: `${BASE}/testfile/20mb?delay=20`, filename: 'nr.bin', connections: 4, speedLimit: 0, maxRetries: 3, auth: DEFAULT_AUTH, headers: [] },
       {
         globalLimiter: new RateLimiter(0),
         sinkFactory: async () => sink,
@@ -233,7 +234,7 @@ describe('TaskRunner', () => {
 function makeRecordingSink() {
   const transform = new TransformStream<Uint8Array, Uint8Array>()
   const sink = new StreamSink(
-    { id: 't', filename: 'x.bin', mime: 'application/octet-stream', totalBytes: 64, resumeFrom: 0 },
+    { id: 't', filename: 'x.bin', mime: 'application/octet-stream', totalBytes: 8, resumeFrom: 0 },
     transform,
   )
   const wire: number[] = []

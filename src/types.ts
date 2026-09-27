@@ -1,10 +1,13 @@
 /** Shared domain types for the Flux download manager. */
 
+/** See `lib/engine/stateMachine.ts` for the allowed transitions. */
 export type DownloadStatus =
   | 'queued'
   | 'probing'
   | 'downloading'
+  | 'pausing'
   | 'paused'
+  | 'verifying'
   | 'finalizing'
   | 'completed'
   | 'failed'
@@ -45,6 +48,41 @@ export interface SegmentState {
 /** Where the finished bytes go once they leave the network. */
 export type SaveMode = 'fsa' | 'stream' | 'memory'
 
+/** Identifies one specific representation of a URL (plan P0-04). */
+export interface ResourceIdentity {
+  etag: string | null
+  lastModified: string | null
+  totalBytes: number | null
+  contentType: string | null
+}
+
+/**
+ * Engine diagnostics — telemetry, rebuilt every session and never used for
+ * resuming (plan P1-06, P2-13, P3-10).
+ */
+export interface DownloadDiagnostics {
+  /** Connection-level retries (a segment re-requested after a failure). */
+  automaticRetryCount: number
+  httpErrors: number
+  rangeErrors: number
+  integrityErrors: number
+  /** A 206 arrived without a readable Content-Range (not CORS-exposed). */
+  unverifiedRanges: boolean
+  /** If-Range is being sent on resumed requests. */
+  ifRange: boolean
+  lastCheckpointAt: number | null
+}
+
+export const EMPTY_DIAGNOSTICS: DownloadDiagnostics = {
+  automaticRetryCount: 0,
+  httpErrors: 0,
+  rangeErrors: 0,
+  integrityErrors: 0,
+  unverifiedRanges: false,
+  ifRange: false,
+  lastCheckpointAt: null,
+}
+
 export interface DownloadTask {
   id: string
   url: string
@@ -71,7 +109,19 @@ export interface DownloadTask {
   /** Rolling samples of overall speed in bytes/s (newest last). */
   speedHistory: number[]
   saveMode: SaveMode | null
-  retries: number
+  /** Times this download ended in `failed` (not connection-level retries). */
+  terminalFailureCount: number
+  /** Scheduler priority; higher runs first (plan P1-09). */
+  priority: number
+  /** FIFO key within a priority, persisted so the queue survives reloads. */
+  queuedAt: number
+  /** Expected SHA-256 (lowercase hex), verified while finalizing. */
+  expectedChecksum: string | null
+  /** Outcome of checksum verification once completed. */
+  checksumVerified: boolean | null
+  /** Representation the partial data came from, once known. */
+  identity: ResourceIdentity | null
+  diagnostics: DownloadDiagnostics
   /** Resolved (possibly proxy-rewritten) URL actually fetched. */
   effectiveUrl: string
   proxyUsed: boolean
@@ -92,6 +142,9 @@ export interface NewDownloadInput {
   auth?: AuthConfig
   headers?: HeaderEntry[]
   autoStart?: boolean
+  priority?: number
+  /** Expected SHA-256 hex digest. */
+  checksum?: string
 }
 
 export type FilterKey = 'all' | 'active' | 'downloading' | 'paused' | 'completed' | 'failed'
@@ -118,6 +171,12 @@ export interface Settings {
   showSegmentView: boolean
   /** Show the debug console pinned to the bottom of the viewport. */
   debugMode: boolean
+  /** Hard cap for in-memory downloads, in MB (plan P2-03). */
+  memoryLimitMB: number
+  /** Open connections allowed to one host across all downloads (plan P1-10). */
+  maxConnectionsPerHost: number
+  /** Open connections allowed across all downloads. */
+  maxTotalConnections: number
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -138,11 +197,17 @@ export const DEFAULT_SETTINGS: Settings = {
   reducedMotion: false,
   showSegmentView: true,
   debugMode: false,
+  memoryLimitMB: 512,
+  maxConnectionsPerHost: 16,
+  maxTotalConnections: 48,
 }
 
 export const DEFAULT_AUTH: AuthConfig = { kind: 'none', username: '', password: '', token: '' }
 
-export const ACTIVE_STATUSES: DownloadStatus[] = ['queued', 'probing', 'downloading', 'finalizing']
+export const ACTIVE_STATUSES: DownloadStatus[] = ['queued', 'probing', 'downloading', 'pausing', 'verifying', 'finalizing']
+
+/** Statuses where the engine is actually doing work (occupies a scheduler slot). */
+export const RUNNING_STATUSES: DownloadStatus[] = ['probing', 'downloading', 'pausing', 'verifying', 'finalizing']
 
 export function isActive(status: DownloadStatus): boolean {
   return ACTIVE_STATUSES.includes(status)

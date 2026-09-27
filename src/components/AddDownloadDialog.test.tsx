@@ -11,7 +11,7 @@ const readText = vi.fn<() => Promise<string>>()
 const addDownload = vi.fn<(input: NewDownloadInput) => Promise<string | null>>()
 const urlInput = () => screen.getByPlaceholderText<HTMLInputElement>('https://example.com/file.zip')
 const open = () => act(() => useStore.getState().setUi({ addOpen: true }))
-const expand = () => fireEvent.click(screen.getByText('Authentication, headers & limits'))
+const expand = () => fireEvent.click(screen.getByText('Authentication, headers, limits & integrity'))
 const addButton = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Add download' })
 
 beforeEach(() => {
@@ -55,6 +55,8 @@ it.each(['Cancel', 'Close', 'Escape', 'backdrop'])('resets all values after clos
   fireEvent.click(screen.getByText('Add header'))
   fireEvent.change(screen.getByLabelText('Header name'), { target: { value: 'Cookie' } })
   fireEvent.change(screen.getByLabelText('Header value'), { target: { value: 'private' } })
+  fireEvent.change(screen.getByLabelText('Expected SHA-256'), { target: { value: 'ab'.repeat(32) } })
+  fireEvent.click(screen.getByText('High'))
 
   if (method === 'Escape') fireEvent.keyDown(window, { key: 'Escape' })
   else if (method === 'backdrop') fireEvent.click(screen.getByRole('dialog').previousElementSibling!)
@@ -70,6 +72,8 @@ it.each(['Cancel', 'Close', 'Escape', 'backdrop'])('resets all values after clos
   expand()
   expect(screen.queryByPlaceholderText('Token')).toBeNull()
   expect(screen.queryByLabelText('Header name')).toBeNull()
+  expect(screen.getByLabelText<HTMLInputElement>('Expected SHA-256').value).toBe('')
+  expect(screen.getByText('Normal').getAttribute('aria-pressed')).toBe('true')
   // Switching auth modes must not reveal credentials from the previous opening.
   fireEvent.click(screen.getByText('Basic'))
   expect(screen.getByPlaceholderText<HTMLInputElement>('Username').value).toBe('')
@@ -79,7 +83,7 @@ it.each(['Cancel', 'Close', 'Escape', 'backdrop'])('resets all values after clos
   fireEvent.click(screen.getByText('None'))
   fireEvent.change(urlInput(), { target: { value: 'https://example.com/new.zip' } })
   fireEvent.click(addButton())
-  expect(addDownload).toHaveBeenCalledWith({ url: 'https://example.com/new.zip', filename: undefined, connections: 4, speedLimit: 0, auth: DEFAULT_AUTH, headers: [] })
+  expect(addDownload).toHaveBeenCalledWith({ url: 'https://example.com/new.zip', filename: undefined, connections: 4, speedLimit: 0, auth: DEFAULT_AUTH, headers: [], priority: 0, checksum: undefined })
   await waitFor(() => expect(useStore.getState().ui.addOpen).toBe(false))
 })
 
@@ -193,4 +197,22 @@ it('shows the URL filename hint without sample download buttons', () => {
   expect(screen.getByText('Leave blank to use the URL filename')).toBeTruthy()
   expect(screen.queryByText('try a sample')).toBeNull()
   expect(screen.queryByText(/20 MB/)).toBeNull()
+})
+
+it('flags a malformed checksum and passes a valid one with the chosen priority', async () => {
+  render(<AddDownloadDialog />)
+  open()
+  await act(async () => {})
+  fireEvent.change(urlInput(), { target: { value: 'https://example.com/a.iso' } })
+  expand()
+  const field = screen.getByLabelText<HTMLInputElement>('Expected SHA-256')
+  fireEvent.change(field, { target: { value: 'abc' } })
+  expect(field.getAttribute('aria-invalid')).toBe('true')
+  expect(screen.getByText('Needs 64 hexadecimal characters.')).toBeTruthy()
+  fireEvent.change(field, { target: { value: 'AB'.repeat(32) } })
+  expect(field.getAttribute('aria-invalid')).toBe('false')
+  fireEvent.click(screen.getByText('Critical'))
+  fireEvent.click(addButton())
+  await waitFor(() => expect(addDownload).toHaveBeenCalledTimes(1))
+  expect(addDownload.mock.calls[0]![0]).toMatchObject({ priority: 20, checksum: 'AB'.repeat(32) })
 })

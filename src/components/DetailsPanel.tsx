@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion'
-import { Copy, Gauge, Pause, Play, RotateCw, Trash2, X } from 'lucide-react'
+import { Copy, Flag, Gauge, Pause, Play, RotateCw, ShieldCheck, Trash2, X } from 'lucide-react'
 import { useMemo } from 'react'
 
 import { useStore } from '../store/useStore'
@@ -11,6 +11,7 @@ import { Sparkline } from './Sparkline'
 import { StatusPill } from './StatusPill'
 import { SPEED_PRESETS } from './ui'
 import { getManager } from '../store/useStore'
+import { PRIORITY_LEVELS } from '../lib/engine/scheduler'
 
 export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
   const task = useStore((s) => (s.selectedId ? s.tasks[s.selectedId] : undefined))
@@ -20,6 +21,7 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
   const retry = useStore((s) => s.retry)
   const remove = useStore((s) => s.remove)
   const updateTask = useStore((s) => s.updateTask)
+  const setPriority = useStore((s) => s.setPriority)
   const pushToast = useStore((s) => s.pushToast)
   const showSegments = useStore((s) => s.settings.showSegmentView)
 
@@ -86,6 +88,29 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
           </div>
         </div>
 
+        <div>
+          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]"><Flag size={11} /> Priority</p>
+          <div className="flex flex-wrap gap-1.5" role="group" aria-label="Priority">
+            {PRIORITY_LEVELS.map((p) => (
+              <button key={p.value} type="button" aria-pressed={task.priority === p.value} onClick={() => setPriority(task.id, p.value)} className={`chip ${task.priority === p.value ? 'border-[var(--brand)] text-[var(--fg)]' : ''}`}>{p.label}</button>
+            ))}
+          </div>
+        </div>
+
+        <div>
+          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]"><ShieldCheck size={11} /> Integrity</p>
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border bg-[color-mix(in_oklab,var(--fg)_3%,transparent)] p-3 text-xs">
+            <Stat label="SHA-256" value={checksumLabel(task.expectedChecksum, task.checksumVerified)} title={task.expectedChecksum ?? undefined} />
+            <Stat label="Validator" value={task.identity?.etag ? 'ETag' : task.identity?.lastModified ? 'Last-Modified' : 'None'} title={task.identity?.etag ?? task.identity?.lastModified ?? undefined} />
+            <Stat label="If-Range" value={task.diagnostics.ifRange ? 'Sent' : 'Not used'} />
+            <Stat label="Range checks" value={task.diagnostics.unverifiedRanges ? 'Unverified' : 'Verified'} title={task.diagnostics.unverifiedRanges ? 'The server did not expose Content-Range to the browser; only Content-Length was checked.' : undefined} />
+            <Stat label="Auto retries" value={String(task.diagnostics.automaticRetryCount)} />
+            <Stat label="Failed runs" value={String(task.terminalFailureCount)} />
+            <Stat label="Errors" value={`${task.diagnostics.httpErrors} http · ${task.diagnostics.rangeErrors} range · ${task.diagnostics.integrityErrors} data`} />
+            <Stat label="Checkpoint" value={task.diagnostics.lastCheckpointAt ? formatClock(task.diagnostics.lastCheckpointAt) : task.saveMode === 'fsa' ? 'On pause' : 'Not resumable after reload'} />
+          </dl>
+        </div>
+
         {showSegments && task.segments.length > 0 && (
           <div>
             <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">Connections</p>
@@ -115,7 +140,7 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
 
       <footer className="flex items-center gap-2 border-t p-3">
         {isActive(task.status) ? (
-          <button className="btn flex-1" onClick={() => pause(task.id)}><Pause size={14} /> Pause</button>
+          <button className="btn flex-1" disabled={task.status === 'pausing' || task.status === 'verifying' || task.status === 'finalizing'} onClick={() => pause(task.id)}><Pause size={14} /> {task.status === 'pausing' ? 'Pausing…' : 'Pause'}</button>
         ) : task.status === 'failed' ? (
           <button className="btn btn-primary flex-1" onClick={() => retry(task.id)}><RotateCw size={14} /> Retry</button>
         ) : task.status !== 'completed' ? (
@@ -160,11 +185,18 @@ export function DetailsPanel({ asSheet = false }: { asSheet?: boolean }) {
   )
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function checksumLabel(expected: string | null, verified: boolean | null): string {
+  if (!expected) return 'Not set'
+  if (verified === true) return 'Verified'
+  if (verified === false) return 'Unverified'
+  return `${expected.slice(0, 8)}…`
+}
+
+function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
     <div>
       <dt className="text-[10px] font-semibold uppercase tracking-wider text-[var(--faint)]">{label}</dt>
-      <dd className="num mt-0.5 truncate font-medium capitalize">{value}</dd>
+      <dd className="num mt-0.5 truncate font-medium capitalize" title={title}>{value}</dd>
     </div>
   )
 }
