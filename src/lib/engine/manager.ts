@@ -25,6 +25,7 @@ import { abortStream } from './sinks/swBridge'
 import type { Sink, SinkContext, SinkResult } from './sinks/types'
 import { TaskRunner } from './taskRunner'
 import type { HttpTransport } from './transport'
+import { globalHostHealth } from './hostHealth'
 
 export type ManagerEvent =
   | { type: 'meta'; id: string; totalBytes: number | null; filename: string | null; mime: string | null; supportsRanges: boolean; identity: ResourceIdentity }
@@ -54,6 +55,7 @@ export class DownloadManager {
   readonly scheduler = new DownloadScheduler()
   readonly pool = new ConnectionPool()
   readonly checkpoints: CheckpointStore
+  readonly hostHealth = globalHostHealth
 
   constructor(
     private host: ManagerHost,

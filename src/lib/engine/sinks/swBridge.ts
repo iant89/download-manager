@@ -119,3 +119,38 @@ export function abortStream(id: string, reason = 'canceled'): void {
     /* ignore */
   }
 }
+
+/**
+ * Service-worker heartbeat (plan P2-05).
+ * StreamSink is non-resumable and the worker can be terminated by the
+ * browser at any time. The heartbeat lets the sink detect a dead worker
+ * and fail the download instead of hanging.
+ */
+export async function pingSw(timeoutMs = 3000): Promise<boolean> {
+  if (!isSwSupported()) return false
+  const controller = navigator.serviceWorker.controller
+  if (!controller) return false
+  return new Promise<boolean>((resolve) => {
+    const channel = new MessageChannel()
+    const timer = setTimeout(() => {
+      channel.port1.close()
+      resolve(false)
+    }, timeoutMs)
+    channel.port1.onmessage = (event: MessageEvent) => {
+      clearTimeout(timer)
+      resolve(Boolean(event.data?.ok))
+      channel.port1.close()
+    }
+    try {
+      controller.postMessage({ type: 'PING' }, [channel.port2])
+    } catch {
+      clearTimeout(timer)
+      resolve(false)
+    }
+  })
+}
+
+/** Returns true if the worker is still alive, false if it was terminated. */
+export async function isSwAlive(): Promise<boolean> {
+  return pingSw(2500)
+}

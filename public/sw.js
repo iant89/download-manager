@@ -59,6 +59,12 @@ self.addEventListener('message', (event) => {
   }
 
   if (data.type === 'PING' && port) port.postMessage({ ok: true, sw: true })
+
+  if (data.type === 'HEARTBEAT' && port) {
+    // P2-05: heartbeat lets StreamSink detect a terminated worker.
+    port.postMessage({ ok: true, alive: true, streams: STREAMS.size })
+    return
+  }
 })
 
 self.addEventListener('fetch', (event) => {
