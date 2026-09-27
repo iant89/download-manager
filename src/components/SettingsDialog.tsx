@@ -96,6 +96,10 @@ export function SettingsDialog() {
             <Segmented value={settings.proxyMode} onChange={(proxyMode) => update({ proxyMode })} options={[{ value: 'off', label: 'Off' }, { value: 'auto', label: 'On CORS failure' }, { value: 'always', label: 'Always' }]} />
           </Field>
         </Section>
+
+        <Section title="Developer">
+          <Toggle checked={Boolean(settings.debugMode)} onChange={(debugMode) => update({ debugMode })} label="Debug mode" hint="Shows a collapsible console pinned to the bottom of the window with app events, engine activity, console output and errors" />
+        </Section>
       </div>
     </Modal>
   )

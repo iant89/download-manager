@@ -25,6 +25,7 @@ import { handleStore } from '../lib/engine/handleStore'
 import { bootstrapSinks, getSinkCapabilities, refreshSinkCapabilities, resolveSaveMode } from '../lib/engine/sinkFactory'
 import { ensureWritePermission, isFsaSupported, pickDirectory, pickSaveFile, PickerCancelledError, type FsaFileHandle } from '../lib/engine/sinks/fsa'
 import { MEMORY_WARN_LIMIT } from '../lib/engine/sinks/memorySink'
+import { debug } from '../lib/debugLog'
 
 export interface Toast {
   id: string
@@ -330,6 +331,17 @@ export const useStore = create<StoreState>()(
           selectedId: id,
         }))
 
+        debug.info('store', `Added download ${filename}`, {
+          id,
+          url,
+          effectiveUrl,
+          connections,
+          speedLimit: task.speedLimit,
+          auth: task.auth.kind,
+          headers: task.headers.filter((h) => h.enabled && h.name.trim()).map((h) => h.name.trim()),
+          saveMode: mode,
+          status: task.status,
+        })
         manager?.createRunner(task)
         if (settings.startImmediately) manager?.pump(get().order)
         scheduleSave()
@@ -339,6 +351,7 @@ export const useStore = create<StoreState>()(
       pause(id) {
         const task = get().tasks[id]
         if (!task) return
+        debug.info('store', `Pause ${task.filename}`, { id })
         void manager?.pause(id)
         set((s) => ({ tasks: { ...s.tasks, [id]: { ...task, status: 'paused', speed: 0 } } }))
         scheduleSave()
@@ -347,6 +360,7 @@ export const useStore = create<StoreState>()(
       resume(id) {
         const task = get().tasks[id]
         if (!task) return
+        debug.info('store', `Resume ${task.filename}`, { id, from: task.status })
         // Failed and canceled runners are terminal (their outcome latches in
         // the engine); resuming them means starting over, not continuing.
         if (task.status === 'failed' || task.status === 'canceled') {
@@ -362,6 +376,7 @@ export const useStore = create<StoreState>()(
       },
 
       cancel(id) {
+        debug.info('store', `Cancel ${get().tasks[id]?.filename ?? id}`, { id })
         void manager?.cancel(id)
         set((s) => {
           const task = s.tasks[id]
@@ -374,6 +389,7 @@ export const useStore = create<StoreState>()(
       retry(id) {
         const task = get().tasks[id]
         if (!task) return
+        debug.info('store', `Retry ${task.filename}`, { id, previousError: task.error })
         set((s) => ({
           tasks: { ...s.tasks, [id]: { ...task, status: 'queued', error: null, receivedBytes: 0, segments: [], startedAt: null, completedAt: null } },
         }))
@@ -383,6 +399,7 @@ export const useStore = create<StoreState>()(
       remove(id) {
         const task = get().tasks[id]
         if (!task) return
+        debug.info('store', `Remove ${task.filename}`, { id })
         if (isActive(task.status)) void manager?.cancel(id)
         else void manager?.destroy(id)
         if (task.resultUrl) URL.revokeObjectURL(task.resultUrl)
@@ -483,6 +500,7 @@ export const useStore = create<StoreState>()(
       },
 
       updateSettings(patch) {
+        debug.debug('settings', `Updated ${Object.keys(patch).join(', ')}`, patch)
         set((s) => ({ settings: { ...s.settings, ...patch } }))
         if (patch.globalSpeedLimit != null) manager?.setGlobalLimit(patch.globalSpeedLimit)
         if (patch.maxConcurrentDownloads != null) manager?.pump(get().order)
@@ -495,6 +513,8 @@ export const useStore = create<StoreState>()(
       },
 
       pushToast(toast) {
+        const level = toast.kind === 'error' ? 'error' : toast.kind === 'warning' ? 'warn' : 'info'
+        debug[level]('toast', toast.message ? `${toast.title} — ${toast.message}` : toast.title)
         const id = newId()
         set((s) => ({ toasts: [...s.toasts, { ...toast, id, createdAt: Date.now() }].slice(-4) }))
         const ttl = toast.kind === 'error' ? 9000 : 5000
@@ -590,6 +610,7 @@ function handleManagerEvent(event: ManagerEvent): void {
   const store = useStore.getState()
   const task = store.tasks[event.id]
   if (!task) return
+  logManagerEvent(event, task)
 
   switch (event.type) {
     case 'meta': {
@@ -681,6 +702,38 @@ function handleManagerEvent(event: ManagerEvent): void {
       scheduleSave()
       break
     }
+  }
+}
+
+function logManagerEvent(event: ManagerEvent, task: DownloadTask): void {
+  const name = task.filename
+  switch (event.type) {
+    case 'progress':
+      return // far too chatty; the details panel shows live progress
+    case 'status': {
+      const level = event.status === 'failed' ? 'error' : 'info'
+      debug[level]('engine', `${name}: ${task.status} → ${event.status}${event.error ? ` (${event.error})` : ''}`, { id: event.id })
+      return
+    }
+    case 'meta':
+      debug.debug('engine', `${name}: probed`, { id: event.id, totalBytes: event.totalBytes, mime: event.mime, filename: event.filename, supportsRanges: event.supportsRanges })
+      return
+    case 'segments': {
+      // Only report connections that just started failing, not every update.
+      const failing = event.segments.filter((s, i) => (s.status === 'retrying' || s.status === 'error') && task.segments[i]?.status !== s.status)
+      if (event.segments.length !== task.segments.length) {
+        debug.debug('engine', `${name}: ${event.segments.length} segment(s) planned`, event.segments.map((s) => ({ index: s.index, start: s.start, end: s.end })))
+      } else if (failing.length) {
+        debug.warn('engine', `${name}: ${failing.length} connection(s) retrying`, failing.map((s) => ({ index: s.index, status: s.status, attempts: s.attempts })))
+      }
+      return
+    }
+    case 'saveMode':
+      debug.info('engine', `${name}: saving via ${event.mode}`, { id: event.id })
+      return
+    case 'complete':
+      debug.info('engine', `${name}: complete (${event.size} bytes via ${event.saveMode})`, { id: event.id })
+      return
   }
 }
 

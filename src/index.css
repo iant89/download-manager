@@ -453,3 +453,18 @@
 .reduced-motion a.btn:active {
   scale: 1 !important;
 }
+
+@layer components {
+  .header-suggest {
+    background: var(--solid);
+    border-color: var(--hairline);
+  }
+}
+
+@layer components {
+  .debug-console {
+    background: var(--solid);
+    border-color: var(--hairline);
+    box-shadow: 0 -12px 32px -18px rgba(0, 0, 0, 0.45);
+  }
+}

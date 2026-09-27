@@ -116,6 +116,8 @@ export interface Settings {
   startImmediately: boolean
   reducedMotion: boolean
   showSegmentView: boolean
+  /** Show the debug console pinned to the bottom of the viewport. */
+  debugMode: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -135,6 +137,7 @@ export const DEFAULT_SETTINGS: Settings = {
   startImmediately: true,
   reducedMotion: false,
   showSegmentView: true,
+  debugMode: false,
 }
 
 export const DEFAULT_AUTH: AuthConfig = { kind: 'none', username: '', password: '', token: '' }

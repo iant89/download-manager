@@ -7,6 +7,7 @@ import type { AuthConfig, HeaderEntry } from '../types'
 import { DEFAULT_AUTH } from '../types'
 import { guessFilename, isForbiddenRequestHeader } from '../lib/http'
 import { Field, Modal, Segmented, SPEED_PRESETS } from './ui'
+import { HeaderNameInput } from './HeaderNameInput'
 
 export function AddDownloadDialog() {
   const open = useStore((s) => s.ui.addOpen)
@@ -91,7 +92,19 @@ export function AddDownloadDialog() {
     }
   }
 
-  const addHeader = () => setHeaders((h) => [...h, { id: crypto.randomUUID(), name: '', value: '', enabled: true }])
+  const focusHeader = useRef<string | null>(null)
+  const addHeader = () => {
+    const id = crypto.randomUUID()
+    focusHeader.current = id
+    setHeaders((h) => [...h, { id, name: '', value: '', enabled: true }])
+  }
+  // Focus a freshly added header name so its suggestions appear straight away.
+  useEffect(() => {
+    const id = focusHeader.current
+    if (!id) return
+    focusHeader.current = null
+    document.getElementById(`header-${id}-name`)?.focus()
+  }, [headers])
 
   return (
     <Modal
@@ -205,16 +218,18 @@ export function AddDownloadDialog() {
                       return (
                         <div key={h.id}>
                           <div className="flex gap-2">
-                            <input
+                            <HeaderNameInput
+                              id={`header-${h.id}-name`}
                               className="field font-mono text-[12px]"
                               aria-label="Header name"
                               aria-invalid={forbidden}
                               aria-describedby={forbidden ? errorId : undefined}
                               placeholder="X-Api-Key"
                               value={h.name}
-                              onChange={(e) => setHeaders(headers.map((x) => (x.id === h.id ? { ...x, name: e.target.value } : x)))}
+                              onChange={(name) => setHeaders((all) => all.map((x) => (x.id === h.id ? { ...x, name } : x)))}
+                              onPick={() => document.getElementById(`header-${h.id}-value`)?.focus()}
                             />
-                            <input aria-label="Header value" className="field font-mono text-[12px]" placeholder="value" value={h.value} onChange={(e) => setHeaders(headers.map((x) => (x.id === h.id ? { ...x, value: e.target.value } : x)))} />
+                            <input id={`header-${h.id}-value`} aria-label="Header value" className="field font-mono text-[12px]" placeholder="value" value={h.value} onChange={(e) => setHeaders(headers.map((x) => (x.id === h.id ? { ...x, value: e.target.value } : x)))} />
                             <button type="button" aria-label="Remove header" className="icon-btn shrink-0" onClick={() => setHeaders(headers.filter((x) => x.id !== h.id))}><Trash2 size={14} /></button>
                           </div>
                           {forbidden && <p id={errorId} role="alert" className="mt-1 text-xs text-[var(--danger)]">This header is forbidden by the browser. Remove it or use a different header.</p>}
