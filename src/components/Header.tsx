@@ -5,6 +5,7 @@ import { useMemo } from 'react'
 import { useStore } from '../store/useStore'
 import { isActive } from '../types'
 import { formatBytes, formatSpeed } from '../lib/format'
+import { useMediaQuery } from '../hooks/useMediaQuery'
 import { Sparkline } from './Sparkline'
 
 export function Header() {
@@ -18,20 +19,28 @@ export function Header() {
   const pauseAll = useStore((s) => s.pauseAll)
   const resumeAll = useStore((s) => s.resumeAll)
   const clearCompleted = useStore((s) => s.clearCompleted)
+  const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
 
   const summary = useMemo(() => {
-    let active = 0, paused = 0, done = 0, remaining = 0
+    let active = 0, paused = 0, done = 0, remaining = 0, total = 0
     for (const id of order) {
       const t = tasks[id]
       if (!t) continue
-      if (isActive(t.status)) { active += 1; if (t.totalBytes) remaining += Math.max(0, t.totalBytes - t.receivedBytes) }
+      if (isActive(t.status)) {
+        active += 1
+        if (t.totalBytes) {
+          remaining += Math.max(0, t.totalBytes - t.receivedBytes)
+          total += t.totalBytes
+        }
+      }
       else if (t.status === 'paused' || t.status === 'failed') paused += 1
       else if (t.status === 'completed') done += 1
     }
-    return { active, paused, done, remaining }
+    return { active, paused, done, remaining, total }
   }, [tasks, order])
 
-  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const isDark = theme === 'dark' || (theme === 'system' && systemDark)
+  const overallProgress = summary.total > 0 ? Math.max(0, Math.min(1, 1 - summary.remaining / summary.total)) : null
 
   return (
     <header className="flex flex-wrap items-center gap-3 px-1 pb-4 sm:gap-4">
@@ -63,6 +72,19 @@ export function Header() {
           <span><b className="text-[var(--fg)]">{summary.done}</b> done</span>
           {summary.remaining > 0 && <span>{formatBytes(summary.remaining)} left</span>}
         </div>
+        {overallProgress != null && (
+          <div className="w-full">
+            <div className="h-1 w-28 overflow-hidden rounded-full bg-[color-mix(in_oklab,var(--fg)_10%,transparent)]">
+              <motion.div
+                className="h-full rounded-full"
+                style={{ background: 'linear-gradient(90deg, var(--brand), var(--accent))' }}
+                initial={false}
+                animate={{ width: `${overallProgress * 100}%` }}
+                transition={{ type: 'spring', stiffness: 120, damping: 26 }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="ml-auto flex items-center gap-1.5">

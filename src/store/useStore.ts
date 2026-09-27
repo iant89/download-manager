@@ -140,7 +140,7 @@ export const useStore = create<StoreState>()(
               speedHistory: [],
               awaitingTarget: false,
               resultUrl: null,
-              segments: task.segments.map((s) => ({ ...s, status: s.received > 0 ? 'idle' : 'idle', speed: 0 })),
+              segments: task.segments.map((s) => ({ ...s, status: 'idle' as const, speed: 0 })),
             }
             tasks[task.id] = restored
             order.push(task.id)
@@ -174,15 +174,20 @@ export const useStore = create<StoreState>()(
         for (const id of state.order) {
           const task = tasks[id]
           if (!task) continue
+          const active = isActive(task.status)
           const previous = lastSample.bytes[id]
           const received = task.receivedBytes
           let speed = 0
-          if (isActive(task.status) && previous != null && dt > 0) {
+          if (active && previous != null && dt > 0) {
             speed = Math.max(0, ((received - previous) / dt) * 1)
           }
-          const smoothed = isActive(task.status)
-            ? task.speed * 0.6 + speed * 0.4
-            : 0
+          const smoothed = active ? task.speed * 0.6 + speed * 0.4 : 0
+
+          // Settled tasks (finished and already decayed to zero) are left
+          // untouched so their cards don't re-render on every tick.
+          const lastSampled = task.speedHistory.at(-1) ?? 0
+          if (!active && task.speed === 0 && lastSampled === 0) continue
+
           const history = task.speedHistory.length >= HISTORY
             ? [...task.speedHistory.slice(1), smoothed]
             : [...task.speedHistory, smoothed]
@@ -199,7 +204,7 @@ export const useStore = create<StoreState>()(
             nextTasks[id] = { ...task, speed: smoothed, speedHistory: history, segments: nextSegments ?? task.segments }
             changed = true
           }
-          if (isActive(task.status)) globalSpeed += smoothed
+          if (active) globalSpeed += smoothed
         }
 
         const globalHistory =
@@ -248,21 +253,44 @@ export const useStore = create<StoreState>()(
         // The save dialog needs a user gesture, so ask before we touch the network.
         let handle: FsaFileHandle | null = null
         const mode = await resolveSaveMode(settings.saveMode)
-        const wantsPicker = mode === 'fsa' && (settings.alwaysAskLocation || !settings.defaultFolderName)
-        if (wantsPicker && isFsaSupported()) {
+        if (mode === 'fsa' && isFsaSupported()) {
           const dir = await handleStore.getDirectory()
-          try {
-            handle = await pickSaveFile(filename, dir ?? undefined)
-            await handleStore.setFile(id, handle)
-          } catch (error) {
-            if (!(error instanceof PickerCancelledError)) {
+          if (settings.alwaysAskLocation || !dir) {
+            try {
+              handle = await pickSaveFile(filename, dir ?? undefined)
+              await handleStore.setFile(id, handle)
+            } catch (error) {
+              if (!(error instanceof PickerCancelledError)) {
+                state.pushToast({
+                  kind: 'warning',
+                  title: 'Could not use that location',
+                  message: error instanceof Error ? error.message : String(error),
+                })
+              }
+              handle = null
+            }
+          } else {
+            // A default folder is set: create the file inside it directly,
+            // no picker needed.
+            try {
+              handle = await dir.getFileHandle(filename, { create: true })
+              const ok = await ensureWritePermission(dir)
+              if (!ok) {
+                state.pushToast({
+                  kind: 'warning',
+                  title: 'Permission needed',
+                  message: `Re-allow writes to "${dir.name}" to save there again.`,
+                })
+                handle = null
+              }
+            } catch (error) {
               state.pushToast({
                 kind: 'warning',
-                title: 'Could not use that location',
+                title: 'Could not use the default folder',
                 message: error instanceof Error ? error.message : String(error),
               })
+              handle = null
             }
-            handle = null
           }
         }
 
@@ -319,7 +347,13 @@ export const useStore = create<StoreState>()(
       resume(id) {
         const task = get().tasks[id]
         if (!task) return
-        if (task.status === 'queued' || task.status === 'paused' || task.status === 'failed') {
+        // Failed and canceled runners are terminal (their outcome latches in
+        // the engine); resuming them means starting over, not continuing.
+        if (task.status === 'failed' || task.status === 'canceled') {
+          get().retry(id)
+          return
+        }
+        if (task.status === 'queued' || task.status === 'paused') {
           void manager?.start(id)
           set((s) => ({
             tasks: { ...s.tasks, [id]: { ...task, status: 'downloading', error: null, startedAt: task.startedAt ?? Date.now() } },
@@ -341,7 +375,7 @@ export const useStore = create<StoreState>()(
         const task = get().tasks[id]
         if (!task) return
         set((s) => ({
-          tasks: { ...s.tasks, [id]: { ...task, status: 'queued', error: null, receivedBytes: 0, segments: [] } },
+          tasks: { ...s.tasks, [id]: { ...task, status: 'queued', error: null, receivedBytes: 0, segments: [], startedAt: null, completedAt: null } },
         }))
         void manager?.retry(id)
       },
@@ -391,8 +425,8 @@ export const useStore = create<StoreState>()(
           if (task.status === 'paused' || task.status === 'failed' || task.status === 'queued') {
             if (started >= limit) break
             started += 1
-            void manager?.start(id)
-            set((s) => ({ tasks: { ...s.tasks, [id]: { ...task, status: 'downloading', error: null } } }))
+            if (task.status === 'failed') get().retry(id)
+            else get().resume(id)
           }
         }
       },

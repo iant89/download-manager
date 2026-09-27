@@ -87,6 +87,8 @@ export class TaskRunner {
   private gate: { promise: Promise<'segmented' | 'single'>; resolve: (v: 'segmented' | 'single') => void } | null = null
   private firstResponseSeen = false
   private currentError: string | null = null
+  /** Set while `pause()` is still settling the queue and sink. */
+  private pausePromise: Promise<void> | null = null
 
   constructor(
     config: TaskConfig,
@@ -157,13 +159,30 @@ export class TaskRunner {
   /** Starts (or resumes) the download. Idempotent while running. */
   async start(): Promise<void> {
     if (this.phase === 'running' || this.outcome) return
+    // Never race an in-flight pause: its queue is still `stopped` (submissions
+    // would be dropped) and a non-resumable sink may still be torn down.
+    if (this.pausePromise) {
+      const settling = this.pausePromise
+      await settling
+      if (this.isRunning() || this.outcome) return
+    }
     this.phase = 'running'
     this.currentError = null
 
     try {
       if (!this.sink) {
         await this.probe()
+        if (this.phase !== 'running') return
         await this.openSink()
+        // Read through a widening cast: control-flow analysis still believes
+        // `this.sink` is null here because openSink() assigned it internally.
+        const opened = this.sink as Sink | null
+        if (this.phase !== 'running') {
+          await opened?.abort('canceled')
+          this.sink = null
+          this.writeQueue = null
+          return
+        }
       } else {
         this.writeQueue?.restart()
       }
@@ -184,15 +203,36 @@ export class TaskRunner {
     this.phase = 'paused'
     this.abortControllers('paused')
     await Promise.allSettled([...this.workers])
-    try {
-      await this.writeQueue?.stop()
-      await checkpointSink(this.sink)
-    } catch {
-      /* ignore */
+    const settle = async (): Promise<void> => {
+      const sink = this.sink
+      const resumable = sink?.resumable ?? false
+      // A stream sink parks chunks that arrive ahead of the cursor; those
+      // writes can never complete once the network is gone, so cut them loose
+      // *before* waiting for the queue to settle (otherwise the pause hangs).
+      if (sink && !resumable) await sink.abort('paused').catch(() => undefined)
+      try {
+        await this.writeQueue?.stop()
+        if (resumable) await checkpointSink(sink)
+      } catch {
+        /* ignore */
+      }
+      if (sink && !resumable) {
+        // The shelf download was ended; resuming restarts from byte zero.
+        this.sink = null
+        this.writeQueue = null
+        this.resetProgress()
+      }
+      this.receivedBytes = this.sumReceived()
+      this.deps.callbacks.onProgress(this.receivedBytes)
+      this.deps.callbacks.onStatus('paused')
     }
-    this.receivedBytes = this.sumReceived()
-    this.deps.callbacks.onProgress(this.receivedBytes)
-    this.deps.callbacks.onStatus('paused')
+    const settling = settle()
+    this.pausePromise = settling
+    try {
+      await settling
+    } finally {
+      if (this.pausePromise === settling) this.pausePromise = null
+    }
   }
 
   async cancel(): Promise<void> {
@@ -263,12 +303,31 @@ export class TaskRunner {
     }
     const sink = await this.deps.sinkFactory(ctx)
     this.sink = sink
-    this.resumeFrom = 0
     const sinkName = sinkFilename(sink)
     if (sinkName) this.filename = sinkName
     this.writeQueue = new WriteQueue(sink)
+    if (!sink.resumable && (this.resumeFrom > 0 || this.sumReceived() > 0)) {
+      // A stream sink cannot seek: any progress from a previous session (or an
+      // earlier attempt with this runner) would misalign the byte stream, so
+      // restart the transfer from zero with a fresh registration.
+      this.resetProgress()
+    }
+    this.resumeFrom = 0
     this.deps.callbacks.onStatus('probing', null, false)
     this.deps.callbacks.onSaveMode(sink.mode)
+  }
+
+  /** Drops all acknowledged-byte bookkeeping so the transfer restarts at 0. */
+  private resetProgress(): void {
+    this.receivedBytes = 0
+    this.resumeFrom = 0
+    this.firstResponseSeen = false
+    this.gate = null
+    this.splitDone = false
+    this.segments = buildSegments(this.totalBytes, 1, false)
+    this.segmented = false
+    this.deps.callbacks.onSegments(this.getSegments())
+    this.deps.callbacks.onProgress(0)
   }
 
   // ------------------------------------------------------------- execution
@@ -394,6 +453,24 @@ export class TaskRunner {
         })
 
         const mode = this.ingestResponse(response, segment)
+        if (mode === 'collapse') {
+          // The server ignored `Range`: this response is the entire file.
+          // Reuse it as a single stream from byte 0 and kill every sibling
+          // worker (their responses are also full copies, not their ranges).
+          this.segmented = false
+          this.splitDone = true
+          this.usedRange = false
+          this.supportsRanges = false
+          for (const other of this.controllers) {
+            if (other !== controller) other.abort(new Error('superseded by single-stream fallback'))
+          }
+          segment.start = 0
+          segment.received = 0
+          segment.end = this.totalBytes != null ? this.totalBytes - 1 : Number.POSITIVE_INFINITY
+          segment.attempts = 0
+          this.segments = [segment]
+          this.emitSegments()
+        }
         if (gate) await gate
         if (this.phase !== 'running') {
           controller.abort()
@@ -407,7 +484,11 @@ export class TaskRunner {
           return
         }
 
-        await this.consume(response, segment, controller)
+        // A 200 to a ranged request means the server ignored the header: the
+        // body starts at byte 0, not at our segment offset. Skip the leading
+        // bytes so the write cursor stays aligned with the file.
+        const skipBytes = response.status === 200 && rangeRequested ? segment.start + segment.received : 0
+        await this.consume(response, segment, controller, skipBytes)
         this.controllers.delete(controller)
         return
       } catch (error) {
@@ -419,6 +500,12 @@ export class TaskRunner {
         if (responseIsFatal(error) || attempt > maxRetries) throw error
         segment.status = 'retrying'
         segment.attempts = attempt
+        // Without range support a retry re-streams the whole file from its
+        // start; rewind the segment so the bytes land at the right offsets.
+        if (!rangeRequested && segment.received > 0) {
+          segment.received = 0
+          this.receivedBytes = this.sumReceived()
+        }
         this.emitSegments()
         await sleep(backoffFor(attempt))
       }
@@ -427,9 +514,13 @@ export class TaskRunner {
 
   /**
    * Reads the response headers and decides whether the server honours ranges.
-   * Returns 'done' when the segment turned out to be already complete.
+   * Returns 'done' when the segment turned out to be already complete and
+   * 'collapse' when a segmented download must fall back to a single stream.
    */
-  private ingestResponse(response: Response, segment: SegmentState): 'segmented' | 'single' | 'done' {
+  private ingestResponse(
+    response: Response,
+    segment: SegmentState,
+  ): 'segmented' | 'single' | 'collapse' | 'done' {
     const contentLength = readContentLength(response)
 
     if (!this.firstResponseSeen) {
@@ -447,21 +538,14 @@ export class TaskRunner {
           this.totalBytes = contentLength
           this.emitMeta()
         }
-        if (this.segmented && segment.index === 0) {
+        if (this.segmented) {
           // The server ignored `Range`: this response is the entire file, so
           // collapse back to a single streaming connection and reuse it.
-          this.segmented = false
-          this.splitDone = true
-          this.usedRange = false
-          segment.start = 0
-          segment.received = 0
-          segment.end = this.totalBytes != null ? this.totalBytes - 1 : Number.POSITIVE_INFINITY
-          this.segments = [segment]
-          this.emitSegments()
+          // (Handled for *any* segment — whichever response lands first.)
           this.gate?.resolve('single')
-          return 'single'
+          return 'collapse'
         }
-        this.gate?.resolve(this.segmented ? 'segmented' : 'single')
+        this.gate?.resolve('single')
         return 'single'
       } else if (this.gate) {
         this.gate.resolve('segmented')
@@ -475,6 +559,9 @@ export class TaskRunner {
 
     if (response.status === 416) {
       // Nothing left for this segment (usually after a resume).
+      if (segment.end === Number.POSITIVE_INFINITY) {
+        throw new HttpError(`Server responded ${response.status} ${response.statusText}`, response.status)
+      }
       segment.received = segment.end - segment.start + 1
       this.emitSegments()
       return 'done'
@@ -486,7 +573,12 @@ export class TaskRunner {
     return 'segmented'
   }
 
-  private async consume(response: Response, segment: SegmentState, controller: AbortController): Promise<void> {
+  private async consume(
+    response: Response,
+    segment: SegmentState,
+    controller: AbortController,
+    skipBytes = 0,
+  ): Promise<void> {
     const body = response.body
     if (!body) {
       if (!response.ok) throw new HttpError(`Empty response (${response.status})`, response.status)
@@ -500,6 +592,7 @@ export class TaskRunner {
     let buffered = 0
     let offset = segment.start + segment.received
     let inFlight = 0
+    let toSkip = skipBytes
 
     const flush = async (final: boolean): Promise<void> => {
       if (buffered === 0) return
@@ -525,11 +618,22 @@ export class TaskRunner {
           controller.abort()
           break
         }
-        const { done, value } = await reader.read()
-        if (done) break
+        const read = await reader.read()
+        if (read.done) break
+        let value = read.value!
 
         await this.deps.globalLimiter.take(value.byteLength)
         await this.taskLimiter.take(value.byteLength)
+
+        // Discard bytes before our window (server ignored the Range header).
+        if (toSkip > 0) {
+          if (value.byteLength <= toSkip) {
+            toSkip -= value.byteLength
+            continue
+          }
+          value = value.subarray(toSkip)
+          toSkip = 0
+        }
 
         const remaining =
           segment.end === Number.POSITIVE_INFINITY ? value.byteLength : Math.max(0, segment.end + 1 - offset)

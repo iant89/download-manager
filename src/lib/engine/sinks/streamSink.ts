@@ -6,10 +6,12 @@ import type { Sink, SinkContext, SinkResult } from './types'
  * Streams bytes to the browser's download shelf through the service worker.
  *
  * The pipe is strictly sequential, but multi-connection downloads arrive out of
- * order. This sink reorders: a chunk whose offset is ahead of the write cursor
- * is parked and its `write()` promise is only resolved once everything before
- * it has been flushed — which applies natural backpressure to the fastest
- * connection instead of buffering the whole file.
+ * order. This sink reorders: a chunk ahead of the write cursor is parked (its
+ * `write()` promise stays open, which is what applies backpressure through the
+ * WriteQueue) and a single serialized flush loop pushes chunks in cursor order
+ * as gaps fill in. Crucially, parking a chunk never blocks *other* writes —
+ * the flush loop is the only writer, so a fast connection racing ahead can
+ * never wedge the pipeline.
  */
 export class StreamSink implements Sink {
   readonly mode: SaveMode = 'stream'
@@ -18,8 +20,10 @@ export class StreamSink implements Sink {
 
   private writer: WritableStreamDefaultWriter<Uint8Array> | null = null
   private closed = false
+  private aborted = false
   private nextOffset = 0
   private parked = new Map<number, ParkedChunk>()
+  private flushing = false
   private filename: string
 
   constructor(
@@ -53,48 +57,73 @@ export class StreamSink implements Sink {
   }
 
   async write(offset: number, chunk: Uint8Array): Promise<void> {
+    if (this.aborted) throw new Error('Stream sink was aborted')
     if (this.closed) throw new Error('Stream sink is closed')
-    if (offset === this.nextOffset) {
-      await this.push(chunk)
-    } else if (offset < this.nextOffset) {
+    if (offset + chunk.byteLength <= this.nextOffset) {
+      // Entirely overlapping bytes (usually a retried range) — already on the wire.
+      return
+    }
+    if (offset < this.nextOffset) {
       // Overlapping bytes (usually a retried range) — drop what we already have.
-      const skip = this.nextOffset - offset
-      if (chunk.byteLength > skip) await this.push(chunk.subarray(skip))
-    } else {
-      await new Promise<void>((resolve, reject) => {
-        this.parked.set(offset, { chunk, resolve, reject })
-      })
+      chunk = chunk.subarray(this.nextOffset - offset)
+      offset = this.nextOffset
     }
-    await this.drainParked()
+
+    // Park the chunk and resolve the promise only once it has been pushed, so
+    // the WriteQueue keeps counting it as outstanding (natural backpressure).
+    const parked = new Promise<void>((resolve, reject) => {
+      const previous = this.parked.get(offset)
+      if (previous) previous.reject(new Error('Superseded by a duplicate chunk'))
+      this.parked.set(offset, { chunk, resolve, reject })
+    })
+    void this.flush()
+    return parked
   }
 
-  private async push(chunk: Uint8Array): Promise<void> {
-    const writer = await this.writerFor()
-    await writer.ready
-    await writer.write(chunk)
-    this.nextOffset += chunk.byteLength
-  }
-
-  private async drainParked(): Promise<void> {
-    let next = this.parked.get(this.nextOffset)
-    while (next) {
-      this.parked.delete(this.nextOffset)
-      try {
-        await this.push(next.chunk)
-        next.resolve()
-      } catch (error) {
-        next.reject(error instanceof Error ? error : new Error(String(error)))
-        throw error
+  /** Serialized: pushes every chunk that is now at the cursor, in order. */
+  private async flush(): Promise<void> {
+    if (this.flushing) return
+    this.flushing = true
+    try {
+      for (;;) {
+        const next = this.parked.get(this.nextOffset)
+        if (!next) break
+        this.parked.delete(this.nextOffset)
+        if (this.aborted) {
+          next.reject(new Error('Stream sink was aborted'))
+          continue
+        }
+        try {
+          const writer = await this.writerFor()
+          await writer.ready
+          await writer.write(next.chunk)
+          this.nextOffset += next.chunk.byteLength
+          next.resolve()
+        } catch (error) {
+          const failure = error instanceof Error ? error : new Error(String(error))
+          next.reject(failure)
+          // Nothing else can ever be pushed behind a broken pipe.
+          this.failAll(failure)
+          return
+        }
       }
-      next = this.parked.get(this.nextOffset)
+    } finally {
+      this.flushing = false
     }
+  }
+
+  private failAll(error: Error): void {
+    for (const parked of this.parked.values()) parked.reject(error)
+    this.parked.clear()
   }
 
   async finish(size: number, filename: string): Promise<SinkResult> {
     this.filename = filename
     this.closed = true
     if (this.parked.size > 0) {
-      throw new Error('Download finished with gaps in the stream')
+      const gap = new Error('Download finished with gaps in the stream')
+      this.failAll(gap)
+      throw gap
     }
     const writer = await this.writerFor()
     await writer.ready
@@ -103,9 +132,9 @@ export class StreamSink implements Sink {
   }
 
   async abort(reason = 'canceled'): Promise<void> {
+    this.aborted = true
     this.closed = true
-    for (const parked of this.parked.values()) parked.reject(new Error(reason))
-    this.parked.clear()
+    this.failAll(new Error(reason))
     try {
       const writer = await this.writerFor()
       await writer.abort(reason)

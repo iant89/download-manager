@@ -7,6 +7,8 @@ export interface Hotkey {
   shift?: boolean
   /** Ignore keystrokes that originate in an input/textarea/select. */
   allowInInput?: boolean
+  /** Extra gate — hotkey is skipped when the predicate returns false. */
+  when?: () => boolean
   run: (event: KeyboardEvent) => void
 }
 
@@ -23,6 +25,7 @@ export function useHotkeys(hotkeys: Hotkey[]): void {
         target && (EDITABLE.has(target.tagName) || target.isContentEditable === true)
 
       for (const hotkey of ref.current) {
+        if (hotkey.when && !hotkey.when()) continue
         const mod = hotkey.mod ? event.metaKey || event.ctrlKey : !event.metaKey && !event.ctrlKey
         if (!mod) continue
         if (hotkey.shift && !event.shiftKey) continue

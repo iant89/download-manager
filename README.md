@@ -25,11 +25,11 @@ Because everything runs in the page, the remote server must allow cross-origin r
 ```bash
 npm install
 npm run dev        # http://localhost:5173
-npm test           # engine + UI tests (dev server must be running for engine tests)
+npm test           # engine + UI tests (self-contained — no dev server needed)
 npm run build      # production bundle in dist/
 ```
 
-The dev/preview server exposes `/testfile/<size>?delay=<ms>&auth=user:pass&noranges=1` — a deterministic, range-capable endpoint for exercising the engine. The **New download** dialog offers one-click samples.
+The dev/preview server exposes `/testfile/<size>?delay=<ms>&auth=user:pass&noranges=1` — a deterministic, range-capable endpoint for exercising the engine. The **New download** dialog offers one-click samples. The test suite spins up its own embedded copy of that endpoint (`tests/testServer.ts`), so `npm test` works without a dev server running.
 
 ## Deploy to GitHub Pages
 

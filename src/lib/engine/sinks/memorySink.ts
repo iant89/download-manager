@@ -3,6 +3,8 @@ import type { Sink, SinkContext, SinkResult } from './types'
 
 /** Largest file we will fully buffer before warning the user. */
 export const MEMORY_WARN_LIMIT = 256 * 1024 * 1024
+/** Above this we never pre-allocate; chunk assembly handles arbitrary sizes. */
+const PREALLOC_LIMIT = MEMORY_WARN_LIMIT
 
 /**
  * Last-resort sink: buffers the file in memory and hands back a blob URL.
@@ -20,8 +22,8 @@ export class MemorySink implements Sink {
   constructor(private ctx: SinkContext) {
     const total = ctx.totalBytes
     // Pre-allocating is both faster and simpler than assembling out-of-order
-    // chunks later; only do it for sizes we are confident the heap can hold.
-    if (total != null && total > 0 && total <= MEMORY_WARN_LIMIT * 8) {
+    // chunks later; only do it for sizes the heap can comfortably hold.
+    if (total != null && total > 0 && total <= PREALLOC_LIMIT) {
       try {
         this.buffer = new Uint8Array(total)
       } catch {
